@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signage Console</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <section id="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>Signage Console</h1>
+      <label>Admin password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+      <button class="primary" type="submit">Sign in</button>
+      <p class="error" id="login-error"></p>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">Signage</div>
+      <nav>
+        <a href="#/screens" data-nav="screens">Screens</a>
+        <a href="#/media" data-nav="media">Media</a>
+        <a href="#/playlists" data-nav="playlists">Playlists</a>
+        <a href="#/settings" data-nav="settings">Settings</a>
+      </nav>
+      <button id="logout" class="ghost">Sign out</button>
+    </header>
+    <main id="view"></main>
+  </div>
+
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+  <div id="toast" hidden></div>
+  <script src="admin.js" type="module"></script>
+</body>
+</html>

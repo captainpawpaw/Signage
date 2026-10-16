@@ -65,6 +65,20 @@ ADMIN_PASSWORD='choose-a-password' npm start
 If you don't set `ADMIN_PASSWORD`, a password is generated on the first run.
 It is printed to the console and saved to `data/admin-password.txt`.
 
+### Windows
+
+Install Node.js (LTS) from https://nodejs.org, then double-click
+**`start-signage.bat`**. It installs anything missing, shows the addresses to
+use from other devices, and starts the server. Close the window to stop it.
+
+The first time, set an admin password: open PowerShell in the folder and run
+`$env:ADMIN_PASSWORD="your-password"; npm.cmd start` once. Without that, use
+the generated one in `data\admin-password.txt`. You can change it later under
+**Settings**.
+
+To update, download the new ZIP from GitHub and copy its contents over the
+folder. Your `data` folder (media, playlists, screens, password) is kept.
+
 ### Your first screen
 
 1. **Media**: upload a few images or a PDF/PPTX deck.
@@ -83,8 +97,12 @@ It is printed to the console and saved to `data/admin-password.txt`.
 
    The player opens fullscreen.
 
-**Preview** on a screen card opens the same player in a normal browser tab,
-without the add-on. This is handy for testing content.
+**Preview** on a screen card gives you a link to the same player, which runs
+in any browser without the add-on, including Chrome or Safari on phones and
+tablets. Mobile browsers can't install extensions, so use this link to test on
+phones. Set the screen's **Server URL** to the PC's network address first, so
+the link doesn't point at `localhost`. Over plain http, phones play the content
+but don't keep an offline copy.
 
 ## Configuration
 

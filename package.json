@@ -1,0 +1,22 @@
+{
+  "name": "signage",
+  "version": "0.1.0",
+  "description": "Self-hosted digital signage: central server + per-screen browser add-on players",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.1.0",
+    "jszip": "^3.10.1",
+    "multer": "^2.0.2",
+    "ws": "^8.18.3"
+  }
+}

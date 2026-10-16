@@ -182,7 +182,22 @@ async function command(s, cmd) {
 
 async function preview(s) {
   const { url } = await api('GET', `/api/screens/${s.id}/preview-url`);
-  window.open(url, `preview-${s.id}`, 'width=960,height=540');
+  const isLocal = (u) => /\/\/(localhost|127\.|\[::1\])/.test(u);
+  const base = s.serverUrl || info.publicUrl || location.origin;
+  const input = h('input', { value: base.replace(/\/+$/, '') + url, readonly: true, onfocus: (e) => e.target.select() });
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(input.value); toast('Link copied'); } catch { input.focus(); document.execCommand('copy'); toast('Link copied'); }
+  };
+  openModal(
+    h('h1', {}, `Preview ${s.name}`),
+    h('p', {}, 'Open this link in any browser (PC, phone or tablet) to run this screen’s player without the add-on. Tap the page to go fullscreen.'),
+    h('label', {}, 'Player link', input),
+    isLocal(input.value) && h('p', { class: 'error' }, 'This link uses localhost, which only works on this PC. For a phone, set the screen’s Server URL (Edit) to this PC’s network address, e.g. http://192.168.1.20:8080.'),
+    h('p', { class: 'hint' }, 'The link contains the screen’s access token — share it only with devices you trust. Over plain http, phones can’t store content for offline playback; the add-on and https setups can.'),
+    h('div', { class: 'modal-actions' },
+      h('button', { onclick: closeModal }, 'Close'),
+      h('button', { onclick: copy }, 'Copy link'),
+      h('button', { class: 'primary', onclick: () => window.open(url, `preview-${s.id}`, 'width=960,height=540') }, 'Open here')));
 }
 
 function scheduleTable(rules, playlists, activeRuleId) {

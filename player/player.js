@@ -40,12 +40,14 @@
   async function loadAsset(url) {
     if (objectUrls.has(url)) return objectUrls.get(url);
     const full = serverUrl + url;
-    const cache = await caches.open(CACHE_NAME);
-    let res = await cache.match(full);
+    // The Cache API only exists in secure contexts (add-on, https, localhost).
+    // A browser preview over plain http on the LAN still plays, just without offline copies.
+    const cache = self.caches ? await caches.open(CACHE_NAME) : null;
+    let res = cache && await cache.match(full);
     if (!res) {
       res = await fetch(full, { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-      await cache.put(full, res.clone());
+      if (cache) await cache.put(full, res.clone());
     }
     const blobUrl = URL.createObjectURL(await res.blob());
     objectUrls.set(url, blobUrl);
@@ -54,8 +56,10 @@
 
   async function pruneAssets(keep) {
     const wanted = new Set(keep.map((u) => serverUrl + u));
-    const cache = await caches.open(CACHE_NAME);
-    for (const req of await cache.keys()) if (!wanted.has(req.url)) await cache.delete(req);
+    if (self.caches) {
+      const cache = await caches.open(CACHE_NAME);
+      for (const req of await cache.keys()) if (!wanted.has(req.url)) await cache.delete(req);
+    }
     for (const [url, blobUrl] of objectUrls) {
       if (!keep.includes(url)) { URL.revokeObjectURL(blobUrl); objectUrls.delete(url); }
     }
@@ -237,6 +241,11 @@
       setTimeout(() => { el.hidden = true; }, 10_000);
     }
   }
+
+  // Phones and tablets can't be put into fullscreen without a tap.
+  document.addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+  });
 
   // ---------- Boot ----------
   try {

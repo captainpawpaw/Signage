@@ -1,6 +1,8 @@
-// Signage add-on service worker: keeps exactly one fullscreen player window
-// open, keeps the display awake, and reopens the player if it is closed.
-importScripts('config.js');
+// Signage add-on background: keeps exactly one fullscreen player window open,
+// keeps the display awake, reopens the player if it is closed, and picks up new
+// versions dropped in by the screen-PC updater.
+// Runs as a service worker in Chrome/Edge and as a background script in Firefox.
+if (typeof importScripts === 'function') importScripts('config.js');
 
 const PLAYER_URL = chrome.runtime.getURL('player.html');
 
@@ -18,8 +20,23 @@ async function ensurePlayer() {
   await chrome.windows.update(win.id, { state: 'fullscreen' });
 }
 
+// Unpacked installs are read from disk, so when the updater has dropped in a
+// new version, reloading the player page runs the new player code. (This
+// background script itself is refreshed the next time the browser starts.)
+async function checkForUpdatedFiles() {
+  try {
+    const res = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+    const onDisk = (await res.json()).version;
+    const { appliedVersion } = await chrome.storage.local.get('appliedVersion');
+    if (!onDisk || onDisk === (appliedVersion || chrome.runtime.getManifest().version)) return;
+    await chrome.storage.local.set({ appliedVersion: onDisk });
+    for (const tab of await chrome.tabs.query({ url: `${PLAYER_URL}*` })) await chrome.tabs.reload(tab.id);
+  } catch {}
+}
+
 function start() {
-  chrome.power.requestKeepAwake('display');
+  chrome.storage.local.set({ appliedVersion: chrome.runtime.getManifest().version });
+  chrome.power?.requestKeepAwake('display');
   chrome.alarms.create('signage-watchdog', { periodInMinutes: 1 });
   ensurePlayer().catch((err) => console.error('[signage]', err));
 }
@@ -27,6 +44,9 @@ function start() {
 chrome.runtime.onInstalled.addListener(start);
 chrome.runtime.onStartup.addListener(start);
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'signage-watchdog') ensurePlayer().catch((err) => console.error('[signage]', err));
+  if (alarm.name !== 'signage-watchdog') return;
+  chrome.power?.requestKeepAwake('display');
+  ensurePlayer().catch((err) => console.error('[signage]', err));
+  checkForUpdatedFiles();
 });
 chrome.action.onClicked.addListener(() => ensurePlayer());

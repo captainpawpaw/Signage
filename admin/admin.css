@@ -127,6 +127,11 @@ a.download span { color: var(--muted); font-size: 13px; }
 .warn-callout { border-left: 3px solid var(--warn); }
 label.toggle { align-items: flex-start; gap: 10px; }
 label.toggle input { margin-top: 3px; }
+.offline-fields { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.offline-fields .form-grid { flex: 1 1 420px; }
+.qr-preview { width: 128px; height: 128px; border-radius: 8px; border: 1px solid var(--border); background: #fff; image-rendering: pixelated; }
+textarea { resize: vertical; }
+
 details summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
 
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; z-index: 100; max-width: calc(100vw - 32px); }

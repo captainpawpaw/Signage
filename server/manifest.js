@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { resolvePlaylistId } from './schedule.js';
+import { offlineNotice } from './offline.js';
 
 export const DEFAULT_SETTINGS = {
   orientation: 'landscape', // landscape | portrait | landscape-flipped | portrait-flipped
@@ -33,7 +34,7 @@ export function buildManifest(store, screen, now = new Date()) {
     } else if (media.type === 'video') {
       // duration 0 = play to the end of the clip.
       items.push({
-        id: entry.id, type: 'video', file: media.file, mime: media.stream ? 'video/mp4' : media.mime,
+        id: entry.id, type: 'video', file: media.file, mime: media.stream ? 'video/mp4' : media.mime, size: media.size,
         duration: seconds * 1000, muted: entry.muted !== false,
         ...(media.stream ? { stream: true, codecs: media.codecs } : {}),
       });
@@ -44,6 +45,7 @@ export function buildManifest(store, screen, now = new Date()) {
     screen: { id: screen.id, name: screen.name },
     playlist: playlist ? { id: playlist.id, name: playlist.name } : null,
     settings: { ...DEFAULT_SETTINGS, ...screen.settings },
+    offline: offlineNotice(store.settings, screen),
     items,
   };
   const version = crypto.createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 12);

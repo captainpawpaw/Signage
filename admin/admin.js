@@ -326,6 +326,8 @@ function screenEditor(s, playlists, groups) {
   const isNew = !s;
   const draft = structuredClone(s || { name: '', location: '', notes: '', timezone: info.defaultTimezone, serverUrl: '', defaultPlaylistId: playlists[0]?.id || null, settings: { ...info.defaults }, schedule: [], groupIds: [] });
   const groupSet = new Set(draft.groupIds);
+  draft.offline = { mode: 'default', ...draft.offline };
+  const customOffline = h('div', { hidden: draft.offline.mode !== 'custom' }, offlineFields(draft.offline));
   const form = h('form', { class: 'form-grid', onsubmit: (e) => e.preventDefault() });
   const field = (label, input, hint) => h('label', {}, label, input, hint && h('span', { class: 'hint' }, hint));
   const bind = (obj, key) => (e) => { obj[key] = e.target.value; };
@@ -378,6 +380,11 @@ function screenEditor(s, playlists, groups) {
     form,
     h('h2', {}, 'Groups'),
     memberChecklist(groups, groupSet, (g) => g.name),
+    h('h2', {}, 'When this screen loses its connection'),
+    h('label', {}, h('select', { onchange: (e) => { draft.offline.mode = e.target.value; customOffline.hidden = e.target.value !== 'custom'; } },
+      [['default', 'Use the default from Settings'], ['custom', 'Custom message / QR code for this screen'], ['off', 'Show nothing']]
+        .map(([v, t]) => h('option', { value: v, selected: draft.offline.mode === v }, t)))),
+    customOffline,
     h('h2', {}, 'Schedule'),
     scheduleTable(draft.schedule, playlists, s?.activeRuleId),
     h('div', { class: 'modal-actions' }, ...danger, h('span', { class: 'spacer' }),
@@ -461,6 +468,30 @@ function extensionDialog(s) {
     h('div', { class: 'modal-actions' },
       h('button', { onclick: closeModal }, 'Close'),
       h('button', { class: 'primary', onclick: download }, 'Download add-on (.zip)')));
+}
+
+// Message + QR code shown on screens while they can't reach the server.
+function offlineFields(draft) {
+  const qrImg = h('img', { class: 'qr-preview', alt: 'QR code preview', hidden: true });
+  let timer;
+  const refreshQr = () => {
+    clearTimeout(timer);
+    timer = setTimeout(guard(async () => {
+      const { dataUrl } = draft.qr ? await api('POST', '/api/qr-preview', { text: draft.qr }) : { dataUrl: null };
+      qrImg.hidden = !dataUrl;
+      if (dataUrl) qrImg.src = dataUrl;
+    }), 300);
+  };
+  refreshQr();
+  return h('div', { class: 'offline-fields' },
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'Message', h('textarea', { rows: 3, maxlength: 300, placeholder: 'e.g. This screen is temporarily offline. Latest news: scan the code.', oninput: (e) => { draft.message = e.target.value; } }, draft.message || '')),
+      h('label', {}, 'QR code link or text', h('input', { value: draft.qr || '', maxlength: 500, placeholder: 'https://intranet.example.com/news', oninput: (e) => { draft.qr = e.target.value; refreshQr(); } }),
+        h('span', { class: 'hint' }, 'Leave empty for no QR code.')),
+      h('label', {}, 'Show as', h('select', { onchange: (e) => { draft.position = e.target.value; } },
+        [['corner', 'Small box in the corner (content keeps playing)'], ['fullscreen', 'Full-screen overlay'], ['none', 'Nothing']]
+          .map(([v, t]) => h('option', { value: v, selected: (draft.position || 'corner') === v }, t))))),
+    qrImg);
 }
 
 // ---------- groups ----------
@@ -671,8 +702,9 @@ async function playlistEditor(pid) {
 async function settingsView() {
   info = await api('GET', '/api/info');
   const general = { serverName: info.serverName, allowPlaintext: info.allowPlaintext };
+  const offline = { message: info.offline.message, qr: info.offline.qr, position: info.offline.position };
   const saveGeneral = guard(async () => {
-    const res = await api('PUT', '/api/settings', general);
+    const res = await api('PUT', '/api/settings', { ...general, offline });
     Object.assign(info, res);
     toast('Settings saved');
   });
@@ -697,6 +729,11 @@ async function settingsView() {
         h('input', { type: 'checkbox', checked: general.allowPlaintext, onchange: (e) => { general.allowPlaintext = e.target.checked; } }),
         h('span', {}, h('strong', {}, 'Allow unencrypted preview links'), h('br'),
           h('span', { class: 'hint' }, 'Needed for testing on phones and tablets (they can’t run the add-on). Switch off once all screens use the add-on: only end-to-end encrypted screens can then play content.'))),
+      h('div', {}, h('button', { class: 'primary', onclick: saveGeneral }, 'Save'))),
+    h('h2', {}, 'When a screen loses its connection'),
+    h('div', { class: 'card' },
+      h('p', { class: 'hint' }, 'After 15 seconds without the server, screens show a small “Reconnecting…” box and keep playing what they have. Add a message or QR code to show with it. Screens store this with their content, so it works while the server is unreachable. Individual screens can override it under Edit.'),
+      offlineFields(offline),
       h('div', {}, h('button', { class: 'primary', onclick: saveGeneral }, 'Save'))),
     h('h2', {}, 'Security'),
     h('div', { class: 'card' },

@@ -91,7 +91,10 @@ test('content setup and unencrypted preview player', async () => {
   const p = socket(base);
   await p.opened;
   p.send({ type: 'hello', mode: 'preview', token });
-  const first = (await p.next((m) => m.type === 'manifest')).manifest;
+  const firstMsg = await p.next((m) => m.type === 'manifest');
+  const first = firstMsg.manifest;
+  // Previews are told the server's player version so open pages can update themselves.
+  assert.equal(firstMsg.playerVersion, /PLAYER_VERSION = '([^']+)'/.exec(fs.readFileSync(new URL('../player/player.js', import.meta.url), 'utf8'))[1]);
   assert.equal(first.items.length, 1);
   assert.equal(first.items[0].duration, 5000);
   assert.match(first.items[0].url, /^\/files\//);

@@ -238,19 +238,39 @@ function copyButton(input) {
 }
 
 async function preview(s) {
-  const { url } = await api('GET', `/api/screens/${s.id}/preview-url`);
+  let links = await api('GET', `/api/screens/${s.id}/preview-url`);
   const isLocal = (u) => /\/\/(localhost|127\.|\[::1\])/.test(u);
-  const base = s.serverUrl || info.publicUrl || location.origin;
-  const input = h('input', { value: base.replace(/\/+$/, '') + url, readonly: true, onfocus: (e) => e.target.select() });
+  const base = (s.serverUrl || info.publicUrl || location.origin).replace(/\/+$/, '');
+  const longInput = h('input', { value: base + links.url, readonly: true, onfocus: (e) => e.target.select() });
+  const shortSlot = h('div');
+
+  const renderShort = () => {
+    if (!links.shortUrl) {
+      shortSlot.replaceChildren(h('div', { class: 'input-row' },
+        h('button', { onclick: guard(async () => { links = await api('POST', `/api/screens/${s.id}/short-link`); renderShort(); }) }, 'Create short link'),
+        h('span', { class: 'hint' }, 'A short address like /p/K7Q2MX that is easier to type on a phone or TV.')));
+      return;
+    }
+    const shortInput = h('input', { value: base + links.shortUrl, readonly: true, class: 'mono', onfocus: (e) => e.target.select() });
+    shortSlot.replaceChildren(h('label', {}, 'Short link', h('div', { class: 'input-row' }, shortInput, copyButton(shortInput),
+      h('button', { class: 'danger', title: 'The short link stops working; the long link is unaffected', onclick: guard(async () => {
+        if (!confirm('Remove the short link? Anyone using it will get “link not valid”. The long link keeps working.')) return;
+        links = await api('DELETE', `/api/screens/${s.id}/short-link`);
+        renderShort();
+      }) }, 'Remove'))));
+  };
+  renderShort();
+
   openModal(
     h('h1', {}, `Preview ${s.name}`),
-    h('p', {}, 'Open this link in any browser (PC, phone or tablet) to run this screen’s player without the add-on. Tap the page to go fullscreen.'),
-    h('label', {}, 'Player link', h('div', { class: 'input-row' }, input, copyButton(input))),
-    isLocal(input.value) && h('p', { class: 'error' }, 'This link uses localhost, which only works on this PC. For a phone, set the screen’s Preview address (Edit) to this PC’s network address, e.g. http://192.168.1.20:8080.'),
-    h('div', { class: 'callout warn-callout' }, 'Preview links are not encrypted: anyone who can see the network traffic can see the content and reuse the link. Use them for testing. Screens running the add-on are always end-to-end encrypted. You can switch previews off in Settings.'),
+    h('p', {}, 'Open this link in any browser (PC, phone, tablet or TV) to run this screen’s player without the add-on. Tap the page to go fullscreen.'),
+    h('label', {}, 'Player link', h('div', { class: 'input-row' }, longInput, copyButton(longInput))),
+    shortSlot,
+    isLocal(base) && h('p', { class: 'error' }, 'This link uses localhost, which only works on this PC. For other devices, set the screen’s Preview address (Edit) to this PC’s network address, e.g. http://192.168.1.20:8080.'),
+    h('div', { class: 'callout warn-callout' }, 'Preview links are not encrypted: anyone who can see the network traffic, or who has the link, can see the content. Use them for testing. Screens running the add-on are always end-to-end encrypted. “Unpair & reset access” (Edit) replaces these links; Settings can switch previews off.'),
     h('div', { class: 'modal-actions' },
       h('button', { onclick: closeModal }, 'Close'),
-      h('button', { class: 'primary', onclick: () => window.open(url, `preview-${s.id}`, 'width=960,height=540') }, 'Open here')));
+      h('button', { class: 'primary', onclick: () => window.open(links.url, `preview-${s.id}`, 'width=960,height=540') }, 'Open here')));
 }
 
 function scheduleTable(rules, playlists, activeRuleId, scope = 'screen') {

@@ -15,6 +15,7 @@ import { ADDON_VERSION, addonId, buildAddonZip, buildAddonCrx, buildScreenSetupZ
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
 import { ServerKeys, CHUNK_SIZE, chunkCount, encryptChunk, newFileKey } from './crypto.js';
 import { candidateUrls, startMdns } from './network.js';
+import { cleanOffline, cleanScreenOffline, qrDataUrl, DEFAULT_OFFLINE } from './offline.js';
 import {
   initAuth, checkPassword, setPassword, issueSession, clearSession,
   isAdmin, previewScreenFromRequest, randomToken, randomCode,
@@ -85,6 +86,7 @@ function migrate(store) {
   s.serverId ||= crypto.randomBytes(9).toString('base64url');
   s.serverName ||= 'Signage';
   if (s.allowPlaintext === undefined) s.allowPlaintext = true;
+  s.offline = { ...DEFAULT_OFFLINE, ...s.offline };
   for (const screen of store.screens) {
     // v1 screens had one token baked into their add-on; it keeps working as the
     // (unencrypted) preview token so nothing breaks during the upgrade.
@@ -93,6 +95,7 @@ function migrate(store) {
     if (screen.shortCode === undefined) screen.shortCode = null;
     if (screen.device === undefined) screen.device = null;
     screen.groupIds ||= [];
+    screen.offline ||= { mode: 'default' };
     delete screen.token;
     delete screen.tokenRevision;
   }
@@ -155,6 +158,7 @@ export async function createApp({
     const rule = activeRule(s, new Date(), store.groups);
     return {
       ...pick(s, ['id', 'name', 'location', 'notes', 'timezone', 'serverUrl', 'defaultPlaylistId', 'schedule', 'groupIds', 'lastSeen', 'createdAt', 'screenshotAt']),
+      offline: s.offline || { mode: 'default' },
       settings: { ...DEFAULT_SETTINGS, ...s.settings },
       paired: Boolean(s.device),
       device: s.device ? { pairedAt: s.device.pairedAt, userAgent: s.device.userAgent } : null,
@@ -282,6 +286,7 @@ export async function createApp({
     serverId: store.settings.serverId,
     serverName: store.settings.serverName,
     allowPlaintext: store.settings.allowPlaintext,
+    offline: { ...store.settings.offline, qrPreview: qrDataUrl(store.settings.offline.qr) },
     fingerprint: keys.fingerprint,
     addonVersion: ADDON_VERSION,
     extensionId: addonId(keys),
@@ -297,8 +302,18 @@ export async function createApp({
       store.settings.allowPlaintext = b.allowPlaintext;
       if (!b.allowPlaintext) hub.dropPreviews();
     }
-    store.save();
-    res.json({ serverName: store.settings.serverName, allowPlaintext: store.settings.allowPlaintext });
+    if (b.offline !== undefined) store.settings.offline = cleanOffline(b.offline);
+    changed();
+    res.json({
+      serverName: store.settings.serverName, allowPlaintext: store.settings.allowPlaintext,
+      offline: { ...store.settings.offline, qrPreview: qrDataUrl(store.settings.offline.qr) },
+    });
+  });
+
+  // Lets the console preview a QR code before saving it.
+  app.post('/api/qr-preview', (req, res) => {
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, 500) : '';
+    res.json({ dataUrl: text ? qrDataUrl(text) : null });
   });
 
   app.post('/api/password', (req, res) => {
@@ -321,7 +336,7 @@ export async function createApp({
       groupIds: cleanGroupIds(store, b.groupIds),
       timezone: validTimezone(b.timezone) ? b.timezone : DEFAULT_TIMEZONE,
       serverUrl: b.serverUrl || '', defaultPlaylistId: b.defaultPlaylistId || null,
-      settings: cleanSettings(b.settings), schedule: cleanSchedule(b.schedule),
+      settings: cleanSettings(b.settings), schedule: cleanSchedule(b.schedule), offline: cleanScreenOffline(b.offline),
       createdAt: new Date().toISOString(), lastSeen: null,
     };
     store.screens.push(screen);
@@ -347,6 +362,7 @@ export async function createApp({
     if (b.settings !== undefined) screen.settings = cleanSettings(b.settings);
     if (b.schedule !== undefined) screen.schedule = cleanSchedule(b.schedule);
     if (b.groupIds !== undefined) screen.groupIds = cleanGroupIds(store, b.groupIds);
+    if (b.offline !== undefined) screen.offline = cleanScreenOffline(b.offline);
     changed();
     res.json(screenView(screen));
   });
@@ -439,7 +455,7 @@ export async function createApp({
         id: id(), name: b.name.trim(), location: b.location || '', notes: '',
         previewToken: randomToken(), enrollToken: randomToken(), shortCode: null, device: null, groupIds: cleanGroupIds(store, b.groupIds),
         timezone: DEFAULT_TIMEZONE, serverUrl: '', defaultPlaylistId: b.defaultPlaylistId || null,
-        settings: {}, schedule: [], createdAt: new Date().toISOString(), lastSeen: null,
+        settings: {}, schedule: [], offline: { mode: 'default' }, createdAt: new Date().toISOString(), lastSeen: null,
       };
     }
     const isNew = !store.screens.includes(screen);

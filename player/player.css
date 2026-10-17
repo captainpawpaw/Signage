@@ -33,5 +33,19 @@ html, body {
 #identify[hidden] { display: none; }
 #identify small { display: block; font-size: 3vmin; font-weight: 400; opacity: 0.8; margin-top: 2vmin; }
 
-#conn { position: fixed; right: 1vmin; bottom: 1vmin; width: 1.2vmin; height: 1.2vmin; border-radius: 50%; background: #e5484d; opacity: 0.8; z-index: 11; }
-#conn[hidden] { display: none; }
+/* Shown while the server can't be reached. */
+#offline { position: absolute; z-index: 9; color: #fff; display: flex; align-items: center; gap: 1.6vmin; }
+#offline[hidden], #offline [hidden] { display: none; }
+#offline.corner {
+  right: 2vmin; bottom: 2vmin; max-width: 45%; padding: 1.2vmin 1.6vmin; border-radius: 1.2vmin;
+  background: rgba(15, 17, 22, 0.85); font-size: 1.9vmin; line-height: 1.35; box-shadow: 0 0.4vmin 2vmin rgba(0, 0, 0, 0.35);
+}
+#offline.fullscreen { inset: 0; flex-direction: column; justify-content: center; text-align: center; background: rgba(8, 10, 14, 0.92); font-size: 4vmin; padding: 6vmin; }
+#offline .offline-qr { flex: none; width: 14vmin; height: 14vmin; border-radius: 0.6vmin; image-rendering: pixelated; }
+#offline.fullscreen .offline-qr { width: 34vmin; height: 34vmin; }
+#offline .offline-text { display: grid; gap: 0.6vmin; }
+#offline .offline-msg { font-weight: 600; white-space: pre-line; }
+#offline .offline-status { opacity: 0.75; font-size: 0.85em; display: flex; align-items: center; gap: 0.8vmin; }
+#offline.fullscreen .offline-status { justify-content: center; }
+#offline .offline-dot { width: 1em; height: 1em; max-width: 1.4vmin; max-height: 1.4vmin; border-radius: 50%; background: #f5a524; animation: offline-pulse 1.6s ease-in-out infinite; }
+@keyframes offline-pulse { 50% { opacity: 0.25; } }

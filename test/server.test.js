@@ -264,6 +264,32 @@ test('resetting a screen unpairs its device', async () => {
   back.ws.close();
 });
 
+test('offline notice: default, settings with QR, per-screen override', async () => {
+  const manifestOf = async (id) => (await call('GET', `/api/screens/${id}/manifest`)).body;
+  assert.deepEqual((await manifestOf(shared.canteen.id)).offline, { position: 'corner', message: '', qr: null });
+
+  const saved = (await call('PUT', '/api/settings', { offline: { message: 'Back soon', qr: 'https://example.com/news', position: 'fullscreen' } })).body;
+  assert.match(saved.offline.qrPreview, /^data:image\/svg\+xml;base64,/);
+  let m = await manifestOf(shared.canteen.id);
+  assert.equal(m.offline.message, 'Back soon');
+  assert.equal(m.offline.position, 'fullscreen');
+  assert.equal(m.offline.qr, saved.offline.qrPreview);
+  const svg = Buffer.from(m.offline.qr.split(',')[1], 'base64').toString();
+  assert.match(svg, /^<svg [^>]*><rect [^>]*\/><path d="[Mhvz0-9 -]+" fill="#000"\/><\/svg>$/, 'plain SVG, nothing executable');
+
+  await call('PUT', `/api/screens/${shared.canteen.id}`, { offline: { mode: 'custom', message: 'Canteen only', position: 'corner' } });
+  m = await manifestOf(shared.canteen.id);
+  assert.deepEqual(m.offline, { position: 'corner', message: 'Canteen only', qr: null });
+  await call('PUT', `/api/screens/${shared.canteen.id}`, { offline: { mode: 'off' } });
+  assert.equal((await manifestOf(shared.canteen.id)).offline.position, 'none');
+
+  // Rejects junk and long input.
+  const junk = (await call('PUT', '/api/settings', { offline: { message: 'x'.repeat(1000), position: 'sideways' } })).body.offline;
+  assert.equal(junk.message.length, 300);
+  assert.equal(junk.position, 'corner');
+  await call('PUT', '/api/settings', { offline: { message: '', qr: '', position: 'corner' } });
+});
+
 test('short links resist guessing', async () => {
   let last;
   for (let i = 0; i < 22; i++) last = (await fetch(`${base}/p/ZZZZZ${i % 10}`, { redirect: 'manual' })).status;

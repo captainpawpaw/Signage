@@ -32,7 +32,14 @@ fullscreen.
   Schedule changes (a window starting or ending) apply within 15 seconds.
 - **Keeps playing offline.** Content is cached on the screen PC, still
   encrypted. A screen that restarts while the server is down carries on
-  playing.
+  playing. Preview links keep the current playlist in memory instead, so
+  they keep looping too, as long as the page stays open.
+- **Connection-lost notice.** After 15 seconds without the server, a small
+  "Reconnecting…" box appears in the corner. Under **Settings** you can add a
+  message and a QR code (any link or text) to show with it, as a corner box or
+  a full-screen overlay. Each screen can use this default, have its own, or
+  show nothing. Screens store the notice with their content, so it works while
+  the server is unreachable.
 - **Scheduling.** Each screen has a default playlist plus rules. A rule can
   set days of the week, a time window (overnight windows are allowed), a date
   range and a priority. Rules use each screen's own time zone.
@@ -135,6 +142,13 @@ detected automatically and run in low-power mode. That means no cross-fades
 and no periodic screenshots, which keeps video smooth. You can force the mode
 on or off per screen with **Edit → Device type**. On a Fire TV, also set
 **Settings → Display & Sounds → Screensaver → Start Time → Never**.
+
+Preview links can't use offline storage, because browsers only allow it on
+HTTPS pages. Instead, the player keeps the current playlist in memory, so it
+keeps looping if the connection drops. This covers all images, plus videos up
+to 300 MB in total (40 MB on TV sticks). Larger videos stream, so they are
+skipped while offline. If the browser or TV restarts while the server is
+unreachable, the page can't load until the connection is back.
 
 Preview links are **not encrypted**. Use them for testing only. When you no
 longer need them, switch them off in **Settings**. From then on, only

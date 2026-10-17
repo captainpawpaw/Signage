@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.0.1';
+  const PLAYER_VERSION = '2.1.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -22,6 +22,10 @@
   const STATUS_MS = 20_000;
   const SCREENSHOT_MS = 5 * 60_000;
   const BUFFER_AHEAD_S = 30;
+  const OFFLINE_AFTER_MS = 15_000;
+  // Preview links can't use offline storage (plain http), so they keep the
+  // playlist in memory instead: all images, and videos up to this budget.
+  const MEMORY_BUDGET_MB = { standard: 300, lowPower: 40 };
 
   // TV sticks and smart-TV browsers are slow: no cross-fades (two layers being
   // composited at once), no periodic screenshots of video frames. Detected
@@ -29,6 +33,7 @@
   const WEAK_DEVICE = /\bAFT\w+|Silk\/|SMART-TV|SmartTV|Tizen|Web0S|webOS|BRAVIA|Android TV|GoogleTV|CrKey|Roku/i.test(navigator.userAgent)
     || (navigator.deviceMemory && navigator.deviceMemory <= 2);
   let lowPower = WEAK_DEVICE;
+  const isLowPower = (settings = {}) => settings.power === 'low' || (settings.power !== 'standard' && WEAK_DEVICE);
 
   const cfg = self.SIGNAGE_CONFIG?.signKey ? self.SIGNAGE_CONFIG : null;
   const MODE = cfg ? 'device' : 'preview';
@@ -60,6 +65,7 @@
   let backoff = 1000;
   let fatal = null;           // message shown when the server refuses us
   const assets = new Map();   // asset key -> object URL, direct URL, or 'stream'
+  const heldBytes = new Map(); // preview videos kept in memory -> size
   const dev = { keys: null, sign: null, wrapKey: null, session: null, screenId: null, contentKeys: new Map() };
 
   // ---------- storage helpers ----------
@@ -171,8 +177,17 @@
     if (assets.has(key)) return;
     if (!item.enc) {
       const url = `${serverUrl}${item.url}?pt=${encodeURIComponent(previewToken)}`;
-      if (item.type === 'image') await preloadImage(url);
-      assets.set(key, url);
+      // Keep a copy in memory so the playlist keeps looping if the connection
+      // drops. Videos over the budget stream instead (and are skipped offline).
+      const budget = MEMORY_BUDGET_MB[lowPower ? 'lowPower' : 'standard'] * 1024 * 1024;
+      const used = [...heldBytes.values()].reduce((a, b) => a + b, 0);
+      const keep = item.type === 'image' || (item.size && used + item.size <= budget);
+      if (!keep) { assets.set(key, url); return; }
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blobUrl = URL.createObjectURL(await res.blob());
+      if (item.type === 'video') heldBytes.set(key, item.size);
+      assets.set(key, blobUrl);
     } else if (item.type === 'video' && canStream(item)) {
       await encryptedChunk(item.enc, 0); // start fast: the rest streams while playing
       assets.set(key, 'stream');
@@ -208,6 +223,7 @@
       if (wanted.has(key)) continue;
       if (url.startsWith('blob:')) URL.revokeObjectURL(url);
       assets.delete(key);
+      heldBytes.delete(key);
     }
     for (const f of [...dev.contentKeys.keys()]) if (!wanted.has(f)) dev.contentKeys.delete(f);
   }
@@ -222,13 +238,17 @@
 
   async function doApply(next) {
     if (manifest && next.version === manifest.version) return;
-    const results = await Promise.allSettled(next.items.map(prepare));
+    lowPower = isLowPower(next.settings);
+    // One at a time: keeps the memory budget accurate and spares small devices.
+    const results = [];
+    for (const item of next.items) results.push(await prepare(item).then(() => ({ status: 'fulfilled' }), (reason) => ({ status: 'rejected', reason })));
     results.forEach((r, i) => r.status === 'rejected' && console.warn('[signage] asset failed', next.items[i].id, r.reason));
     const items = next.items.filter((_, i) => results[i].status === 'fulfilled');
 
     manifest = { ...next, items };
     store.set(MANIFEST_KEY, next);
     applySettings(manifest.settings || {});
+    if (!$('#offline').hidden) showOffline();
     document.title = `Signage – ${manifest.screen?.name || ''}`;
     index = -1;
     advance();
@@ -243,7 +263,7 @@
   }
 
   function applySettings(s) {
-    lowPower = s.power === 'low' || (s.power !== 'standard' && WEAK_DEVICE);
+    lowPower = isLowPower(s);
     stage.className = [s.orientation || 'landscape', s.transition === 'none' || lowPower ? '' : 'fade'].join(' ');
     stage.style.setProperty('--bg', s.background || '#000');
     stage.style.setProperty('--fit', s.fit || 'contain');
@@ -393,8 +413,10 @@
     return Promise.any(list.map(probe));
   }
 
+  let retryTimer = null;
   function retry() {
-    setTimeout(connect, backoff);
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, backoff);
     backoff = Math.min(backoff * 2, 30_000);
   }
 
@@ -460,6 +482,7 @@
 
   async function dispatch(msg) {
     if (msg.type === 'pairing') {
+      setConnected(true);
       await forgetContent();
       showIdle('Pair this screen', {
         title: cfg.serverName || 'Signage', code: msg.code,
@@ -486,8 +509,12 @@
     if (MODE !== 'preview' || conn?.ws.readyState === WebSocket.OPEN || !previewToken) return;
     try {
       const res = await fetch(`${serverUrl}/api/player/manifest`, { headers: { Authorization: `Bearer ${previewToken}` }, cache: 'no-store' });
-      if (res.ok) applyManifest(await res.json());
-    } catch {}
+      if (!res.ok) return setConnected(false);
+      setConnected(true);
+      applyManifest(await res.json());
+      // The server is back: reconnect the live socket now instead of waiting out the back-off.
+      if (!conn) { clearTimeout(retryTimer); backoff = 1000; connect(); }
+    } catch { setConnected(false); }
   }
 
   function send(obj) {
@@ -541,12 +568,32 @@
     }
   }
 
+  // ---------- connection-lost notice ----------
   let connTimer = null;
+  let connected = false;
   function setConnected(ok) {
+    if (ok === connected && (ok || connTimer)) return;
+    connected = ok;
     clearTimeout(connTimer);
+    connTimer = null;
     // Only flag an outage that lasts, so brief reconnects stay invisible.
-    if (ok) $('#conn').hidden = true;
-    else connTimer = setTimeout(() => { $('#conn').hidden = false; }, 30_000);
+    if (ok) $('#offline').hidden = true;
+    else connTimer = setTimeout(showOffline, OFFLINE_AFTER_MS);
+  }
+
+  // Message and QR code come from the console (Settings, or per screen) and are
+  // stored with the content, so they are available while the server is unreachable.
+  function showOffline() {
+    const notice = manifest?.offline || store.get(MANIFEST_KEY)?.offline || { position: 'corner' };
+    const box = $('#offline');
+    if (notice.position === 'none') { box.hidden = true; return; }
+    box.className = notice.position === 'fullscreen' ? 'fullscreen' : 'corner';
+    const msg = box.querySelector('.offline-msg');
+    msg.textContent = notice.message || '';
+    msg.hidden = !notice.message;
+    const qr = box.querySelector('.offline-qr');
+    if (notice.qr && /^data:image\/svg\+xml;base64,/.test(notice.qr)) { qr.src = notice.qr; qr.hidden = false; } else { qr.removeAttribute('src'); qr.hidden = true; }
+    box.hidden = false;
   }
 
   function runCommand(cmd) {
@@ -587,6 +634,7 @@
     // Offline start: replay the last manifest from the encrypted local cache.
     if (saved && (MODE === 'device' || saved.items.every((it) => it.url))) applyManifest(saved);
     else showIdle('Connecting…');
+    setConnected(false); // starts the timer; cleared as soon as the server answers
     connect();
     setInterval(poll, POLL_MS);
     setInterval(sendStatus, STATUS_MS);

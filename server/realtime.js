@@ -22,8 +22,8 @@ const SCHEDULE_TICK_MS = 15_000;
 const MAX_SCREENSHOT_BYTES = 3 * 1024 * 1024;
 
 export class Hub {
-  constructor(store, { keys, files, screenshotsDir, candidates, addonVersion, log = console.log }) {
-    Object.assign(this, { store, keys, files, screenshotsDir, candidates, addonVersion, log });
+  constructor(store, { keys, files, screenshotsDir, candidates, addonVersion, playerVersion = null, log = console.log }) {
+    Object.assign(this, { store, keys, files, screenshotsDir, candidates, addonVersion, playerVersion, log });
     this.connections = new Map(); // screenId -> Set<conn>
     this.pairing = new Map();     // code -> conn
     this.sessions = new Map();    // session token -> conn (for encrypted chunk downloads)
@@ -200,7 +200,8 @@ export class Hub {
           return { k: data.toString('base64'), kiv: iv.toString('base64') };
         },
       });
-    this.#send(conn, { type: 'manifest', manifest: shaped });
+    // Previews load the player from this server, so they can update themselves.
+    this.#send(conn, { type: 'manifest', manifest: shaped, ...(conn.mode === 'preview' ? { playerVersion: this.playerVersion } : {}) });
   }
 
   #screenshot(conn, msg) {

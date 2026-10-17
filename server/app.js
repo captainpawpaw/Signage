@@ -147,7 +147,10 @@ export async function createApp({
   const updateBase = () => publicUrl || candidates()[0];
   const addonOpts = (extra = {}) => ({ keys, settings: store.settings, candidates: candidates(), updateBase: updateBase(), ...extra });
 
-  const hub = new Hub(store, { keys, files, screenshotsDir, candidates, addonVersion: ADDON_VERSION, log });
+  // Version of the player the server hands out to preview links; open preview
+  // pages reload themselves when it changes, so updates reach them unattended.
+  const playerVersion = /PLAYER_VERSION = '([^']+)'/.exec(fs.readFileSync(path.join(ROOT, 'player', 'player.js'), 'utf8'))?.[1] || null;
+  const hub = new Hub(store, { keys, files, screenshotsDir, candidates, addonVersion: ADDON_VERSION, playerVersion, log });
 
   const app = express();
   app.disable('x-powered-by');
@@ -654,7 +657,8 @@ export async function createApp({
   // ---- Static UIs ----
   // The browser-preview player has no baked config; it reads the token from the URL.
   app.get('/player/config.js', (req, res) => res.type('js').send('// Browser preview: config comes from the URL hash.\n'));
-  app.use('/player', express.static(path.join(ROOT, 'player')));
+  // no-cache: browsers must check for a newer player on every load.
+  app.use('/player', express.static(path.join(ROOT, 'player'), { setHeaders: (res) => res.set('Cache-Control', 'no-cache') }));
   app.use('/admin', express.static(path.join(ROOT, 'admin')));
   app.get('/', (req, res) => res.redirect('/admin/'));
 

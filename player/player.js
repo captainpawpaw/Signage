@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.1.0';
+  const PLAYER_VERSION = '2.1.1';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -497,10 +497,24 @@
       setConnected(true);
     } else if (msg.type === 'manifest') {
       setConnected(true);
+      if (reloadForNewPlayer(msg.playerVersion)) return;
       applyManifest(msg.manifest);
     } else if (msg.type === 'command') {
       runCommand(msg.command);
     }
+  }
+
+  // Preview pages run the player straight from the server: when the server has a
+  // newer one, reload to pick it up. Guarded so a stale cache can't cause a loop.
+  function reloadForNewPlayer(serverVersion) {
+    if (MODE !== 'preview' || !serverVersion || serverVersion === PLAYER_VERSION) return false;
+    try {
+      if (sessionStorage.getItem('signage.reloadedFor') === serverVersion) return false;
+      sessionStorage.setItem('signage.reloadedFor', serverVersion);
+    } catch { return false; }
+    console.log(`[signage] server has player ${serverVersion}, running ${PLAYER_VERSION}: reloading`);
+    location.reload();
+    return true;
   }
 
   // HTTP fallback for networks/proxies that break WebSockets (previews only;

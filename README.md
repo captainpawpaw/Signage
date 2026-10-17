@@ -130,6 +130,12 @@ If you want an address that is easier to type on a TV or a phone, click
 them, and you can remove one at any time. Wrong guesses are rate-limited, and
 **Unpair & reset access** replaces the code.
 
+**TV sticks and smart TVs** (Fire TV/Silk, Android TV, Tizen, webOS) are
+detected automatically and run in low-power mode. That means no cross-fades
+and no periodic screenshots, which keeps video smooth. You can force the mode
+on or off per screen with **Edit → Device type**. On a Fire TV, also set
+**Settings → Display & Sounds → Screensaver → Start Time → Never**.
+
 Preview links are **not encrypted**. Use them for testing only. When you no
 longer need them, switch them off in **Settings**. From then on, only
 encrypted add-on screens can play content.

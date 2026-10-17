@@ -89,8 +89,10 @@ export async function transcodeVideo(input, mediaDir, id) {
 
   const vp9 = VIDEO_CODEC === 'vp9';
   const videoArgs = vp9
-    ? ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-row-mt', '1', '-deadline', 'realtime', '-cpu-used', '8', '-pix_fmt', 'yuv420p']
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-profile:v', 'high', '-level', big ? '5.1' : '4.1', '-pix_fmt', 'yuv420p'];
+    // VP9 "constrained quality": CRF with -b:v as the ceiling.
+    ? ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', big ? '12M' : '5M', '-row-mt', '1', '-deadline', 'realtime', '-cpu-used', '8', '-pix_fmt', 'yuv420p']
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-profile:v', 'high', '-level', big ? '5.1' : '4.1', '-pix_fmt', 'yuv420p',
+      '-maxrate', big ? '20M' : '8M', '-bufsize', big ? '40M' : '16M'];
   const audioArgs = vp9 ? ['-c:a', 'libopus', '-b:a', '128k', '-ac', '2'] : ['-c:a', 'aac', '-b:a', '128k', '-ac', '2'];
 
   await run(tools.ffmpeg, [
@@ -98,7 +100,9 @@ export async function transcodeVideo(input, mediaDir, id) {
     '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0'] : []),
     ...videoArgs,
     '-vf', `scale=w='min(iw,${VIDEO_MAX_SIZE})':h='min(ih,${VIDEO_MAX_SIZE})':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2`,
-    '-g', '60', '-keyint_min', '60',
+    // 30 fps and a bitrate ceiling keep playback smooth on TV sticks and other
+    // low-power players (phone videos are often 60 fps at a high bitrate).
+    '-fpsmax', '30', '-g', '60', '-keyint_min', '60',
     ...(hasAudio ? audioArgs : []),
     '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
     out,

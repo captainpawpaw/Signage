@@ -115,6 +115,14 @@ test('content setup and unencrypted preview player', async () => {
   assert.equal((await call('POST', `/api/screens/${screen.id}/command`, { command: 'identify' })).body.delivered, 1);
   assert.equal((await p.next((m) => m.type === 'command')).command, 'identify');
 
+  // Short link redirects to the full preview link; codes are case-insensitive.
+  const { shortUrl } = (await call('GET', `/api/screens/${screen.id}/preview-url`)).body;
+  assert.match(shortUrl, /^\/p\/[A-Z2-9]{6}$/);
+  const short = await fetch(base + shortUrl.toLowerCase(), { redirect: 'manual' });
+  assert.equal(short.status, 302);
+  assert.equal(short.headers.get('location'), url);
+  shared.shortUrl = shortUrl;
+
   const polled = await call('GET', '/api/player/manifest', null, { authorization: `Bearer ${token}` });
   assert.equal(polled.body.version, second.version);
   p.ws.close();
@@ -247,9 +255,16 @@ test('resetting a screen unpairs its device', async () => {
   const { d, keys } = shared.device;
   await call('POST', `/api/screens/${shared.screen.id}/regenerate-token`);
   assert.equal(await d.closed, 4001);
+  assert.equal((await fetch(base + shared.shortUrl, { redirect: 'manual' })).status, 404, 'old short link is revoked');
   const back = await device(base, cfg, keys);
   assert.ok((await back.next((m) => m.type === 'pairing')).code, 'must be paired again');
   back.ws.close();
+});
+
+test('short links resist guessing', async () => {
+  let last;
+  for (let i = 0; i < 22; i++) last = (await fetch(`${base}/p/ZZZZZ${i % 10}`, { redirect: 'manual' })).status;
+  assert.equal(last, 429);
 });
 
 test('CRX package and update manifest', async () => {

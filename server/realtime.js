@@ -9,19 +9,17 @@
 //   bound to this connection (cn) with an increasing sequence number.
 // Unencrypted players (browser previews, v1 add-ons):
 //   hello {mode:'preview', token} → plain manifests with /files URLs.
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { buildManifest, forPlayer } from './manifest.js';
-import { screenByPreviewToken, findByToken, randomToken } from './auth.js';
+import { screenByPreviewToken, findByToken, randomToken, randomCode } from './auth.js';
 import { AUTH_PREFIX, isValidDeviceKey, verifyDeviceSignature, seal, open } from './crypto.js';
 
 const HELLO_TIMEOUT_MS = 10_000;
 const PING_INTERVAL_MS = 25_000;
 const SCHEDULE_TICK_MS = 15_000;
 const MAX_SCREENSHOT_BYTES = 3 * 1024 * 1024;
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export class Hub {
   constructor(store, { keys, files, screenshotsDir, candidates, addonVersion, log = console.log }) {
@@ -127,7 +125,7 @@ export class Hub {
 
     // Unknown device: hand out a pairing code and wait for an admin.
     let code;
-    do code = Array.from(crypto.randomBytes(6), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+    do code = randomCode(6);
     while (this.pairing.has(code));
     Object.assign(conn, { mode: 'pairing', code, since: Date.now() });
     this.pairing.set(code, conn);

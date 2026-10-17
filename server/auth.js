@@ -13,6 +13,12 @@ export function randomToken(bytes = 24) {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 
+// Short codes people can read and type: no 0/O, 1/I/L.
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export function randomCode(length = 6) {
+  return Array.from(crypto.randomBytes(length), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+}
+
 // Sets up the admin credential and session secret on first run.
 // ADMIN_PASSWORD (env) always wins; otherwise a password is generated once and
 // written to <dataDir>/admin-password.txt.

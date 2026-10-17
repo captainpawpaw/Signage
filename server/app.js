@@ -17,7 +17,7 @@ import { ServerKeys, CHUNK_SIZE, chunkCount, encryptChunk, newFileKey } from './
 import { candidateUrls, startMdns } from './network.js';
 import {
   initAuth, checkPassword, setPassword, issueSession, clearSession,
-  isAdmin, previewScreenFromRequest, randomToken,
+  isAdmin, previewScreenFromRequest, randomToken, randomCode,
 } from './auth.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,6 +70,14 @@ function cleanGroupIds(store, ids) {
   return [...new Set(ids)].filter((gid) => store.groups.some((g) => g.id === gid));
 }
 
+// Short preview-link code (/p/K7Q2MX), unique across screens.
+function uniqueShortCode(store) {
+  let code;
+  do code = randomCode(6);
+  while (store.screens.some((s) => s.shortCode === code));
+  return code;
+}
+
 // Brings data written by older versions up to date.
 function migrate(store) {
   const s = store.settings;
@@ -81,6 +89,7 @@ function migrate(store) {
     // (unencrypted) preview token so nothing breaks during the upgrade.
     if (!screen.previewToken) screen.previewToken = screen.token || randomToken();
     if (screen.enrollToken === undefined) screen.enrollToken = randomToken();
+    if (!screen.shortCode) screen.shortCode = uniqueShortCode(store);
     if (screen.device === undefined) screen.device = null;
     screen.groupIds ||= [];
     delete screen.token;
@@ -189,6 +198,22 @@ export async function createApp({
     res.set('Cache-Control', 'no-store').json({ app: 'signage', serverId: store.settings.serverId, name: store.settings.serverName });
   });
 
+  // Short preview links: /p/K7Q2MX → the screen's full preview link.
+  // Misses are limited per address so codes can't be guessed by trying them all.
+  const misses = new Map();
+  app.get('/p/:code', (req, res) => {
+    const now = Date.now();
+    const m = misses.get(req.ip);
+    if (m && m.until > now && m.count >= 20) throw new HttpError(429, 'Too many wrong codes – try again in 10 minutes');
+    const code = String(req.params.code).toUpperCase();
+    const screen = store.settings.allowPlaintext ? store.screens.find((s) => s.shortCode === code) : null;
+    if (!screen) {
+      misses.set(req.ip, m && m.until > now ? { ...m, count: m.count + 1 } : { count: 1, until: now + 10 * 60_000 });
+      return res.status(404).type('html').send('<!doctype html><meta name="viewport" content="width=device-width"><p style="font:18px system-ui;margin:40px">This signage link is not valid (any more). Ask for a new one.</p>');
+    }
+    res.set('Cache-Control', 'no-store').redirect(`/player/player.html#token=${encodeURIComponent(screen.previewToken)}`);
+  });
+
   // Unencrypted players (previews) only.
   app.get('/api/player/manifest', (req, res) => {
     const screen = previewScreenFromRequest(store, req);
@@ -287,7 +312,7 @@ export async function createApp({
     if (!b.name?.trim()) throw new HttpError(400, 'Name is required');
     const screen = {
       id: id(), name: b.name.trim(), location: b.location || '', notes: b.notes || '',
-      previewToken: randomToken(), enrollToken: randomToken(), device: null,
+      previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null,
       groupIds: cleanGroupIds(store, b.groupIds),
       timezone: validTimezone(b.timezone) ? b.timezone : DEFAULT_TIMEZONE,
       serverUrl: b.serverUrl || '', defaultPlaylistId: b.defaultPlaylistId || null,
@@ -334,7 +359,7 @@ export async function createApp({
   // pre-configured downloads and preview links all stop working.
   app.post('/api/screens/:id/regenerate-token', (req, res) => {
     const screen = findOr404(store.screens, req.params.id, 'Screen');
-    Object.assign(screen, { previewToken: randomToken(), enrollToken: randomToken(), device: null });
+    Object.assign(screen, { previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null });
     store.save();
     hub.disconnect(screen.id);
     res.json(screenView(screen));
@@ -354,7 +379,7 @@ export async function createApp({
   app.get('/api/screens/:id/preview-url', (req, res) => {
     const screen = findOr404(store.screens, req.params.id, 'Screen');
     if (!store.settings.allowPlaintext) throw new HttpError(409, 'Unencrypted previews are switched off in Settings');
-    res.json({ url: `/player/player.html#token=${encodeURIComponent(screen.previewToken)}` });
+    res.json({ url: `/player/player.html#token=${encodeURIComponent(screen.previewToken)}`, shortUrl: `/p/${screen.shortCode}` });
   });
 
   app.get('/api/screens/:id/screenshot.jpg', (req, res) => {
@@ -388,7 +413,7 @@ export async function createApp({
       if (!b.name?.trim()) throw new HttpError(400, 'Choose a screen or give the new one a name');
       screen = {
         id: id(), name: b.name.trim(), location: b.location || '', notes: '',
-        previewToken: randomToken(), enrollToken: randomToken(), device: null, groupIds: cleanGroupIds(store, b.groupIds),
+        previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null, groupIds: cleanGroupIds(store, b.groupIds),
         timezone: DEFAULT_TIMEZONE, serverUrl: '', defaultPlaylistId: b.defaultPlaylistId || null,
         settings: {}, schedule: [], createdAt: new Date().toISOString(), lastSeen: null,
       };

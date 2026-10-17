@@ -1,191 +1,221 @@
 # Signage
 
 Self-hosted digital signage. One central server holds the content and the
-schedules. Each display PC runs a browser add-on that the server generates
-for that screen only. The add-on connects back to the server over LAN or WAN,
-gets its content, and plays it fullscreen.
+schedules. Each display PC runs a browser add-on that finds the server on the
+network by itself, pairs with it, and plays end-to-end encrypted content in
+fullscreen.
 
 ```
-           ┌─────────────────────────── Server (Node.js) ──────────────────────────┐
- Admin ──▶ │  Admin console (/admin)   REST API   Media store   Scheduler   WS hub │
- browser   └───────────────▲──────────────────────────────────────────▲───────────┘
-                           │ HTTPS/HTTP: media files (token-auth)     │ WebSocket: manifest push,
-                           │                                          │ status, remote commands
-              ┌────────────┴───────────┐                 ┌────────────┴───────────┐
-              │ Screen PC: Chrome/Edge │       …         │ Screen PC: Chrome/Edge │
-              │  add-on for "Lobby"    │                 │  add-on for "Canteen"  │
-              └────────────────────────┘                 └────────────────────────┘
+           ┌──────────────────────────── Server (Node.js) ───────────────────────────┐
+ Admin ──▶ │ Console (/admin)  REST API  Media + conversion  Scheduler  Signing keys │
+ browser   │                  WebSocket hub ── signed messages ──┐  mDNS: signage.local
+           └───────────────▲─────────────────────────────────────┼───────────────────┘
+                           │ AES-GCM encrypted chunks            │ manifests, commands,
+                           │ (key wrapped per screen)            │ status, screenshots
+              ┌────────────┴───────────┐                ┌────────┴───────────────┐
+              │ Screen PC: Chrome/Edge │       …        │ Screen PC: Chrome/Edge │
+              │ add-on + device keys   │                │ add-on + device keys   │
+              └────────────────────────┘                └────────────────────────┘
 ```
 
 ## Features
 
-- **Per-screen add-on.** Each screen gets its own Manifest V3 extension for
-  Chrome or Edge. It has that screen's server URL and secret token built in.
-  You can revoke a screen's token at any time, which disconnects the old
-  add-on straight away.
-- **Live updates.** Players keep a WebSocket open to the server. When you edit
-  a playlist or screen, or a schedule window starts or ends, the server pushes
-  a new manifest. On a LAN the screen changes about 50 ms after you click
-  Save. If a proxy blocks WebSockets, the player falls back to HTTP polling.
-- **Keeps playing offline.** Players pre-cache every asset with the Cache API
-  before they switch playlists, and they keep the last good manifest. If the
-  server or network goes down, the screen keeps playing and reconnects
-  automatically when it can.
-- **Scheduling per screen.** Each screen has a default playlist plus a list
-  of rules. A rule can set days of the week, a time window (overnight windows
-  are allowed), a date range and a priority. Times are evaluated in the
-  screen's own time zone.
-- **Remote configuration per screen.** You can set orientation (portrait or
-  flipped), fit or fill, transition and background colour. Screens can be told
-  to *Identify* (show their name on the display), *Skip* to the next item or
-  *Reload*. The console shows live status for each screen: online or offline,
-  what it is playing, its resolution and its IP.
-- **Content types**
-  - Images (PNG, JPEG, WebP, GIF, SVG, AVIF).
-  - Slide decks. PDFs are converted with `pdftoppm`. PowerPoint, Keynote and
-    ODP files go through LibreOffice first. Each slide becomes an image, with
-    a per-slide duration.
-  - Video (MP4, WebM). A video plays to the end or for a set number of
-    seconds, and is muted by default.
-- **Kiosk behaviour.** The add-on opens the player fullscreen when the browser
-  starts and keeps the display awake. A 1-minute watchdog reopens the player
-  if it gets closed.
+- **One add-on for every screen, no IP addresses.** The add-on comes in
+  Chrome/Edge and Firefox versions. It tries every way it knows to reach the
+  server: `signage.local` (the server announces this name with mDNS), the
+  server PC's name, its LAN addresses, and the last address that worked. A new
+  screen then shows a **pairing code**, which you approve in the console. If you
+  prefer to skip the code, you can download a *pre-configured* add-on that pairs
+  with one specific screen on its own.
+- **PGP-style end-to-end encryption.** See [Security](#security) below.
+- **Live updates.** An edit shows on screen within about 50 ms on a LAN.
+  Schedule changes (a window starting or ending) apply within 15 seconds.
+- **Keeps playing offline.** Content is cached on the screen PC, still
+  encrypted. A screen that restarts while the server is down carries on
+  playing.
+- **Scheduling.** Each screen has a default playlist plus rules. A rule can
+  set days of the week, a time window (overnight windows are allowed), a date
+  range and a priority. Rules use each screen's own time zone.
+- **Groups.** Put screens into groups such as "Ground floor" or "Canteen". A
+  group can have its own default playlist and schedule. You can also send a
+  command to every screen in a group at once: Identify, Screenshots or Reload.
+- **Screenshots.** The console shows what each screen is actually displaying.
+  Screens send a screenshot every 5 minutes, after content changes, and when
+  you ask for one.
+- **Remote control.** You can set each screen's orientation, fit, transition
+  and background colour. You can tell a screen to Identify, Skip or Reload. The
+  console shows live status: online or offline, encrypted or not, what is
+  playing, resolution, IP and add-on version.
+- **Content**
+  - Images.
+  - Slide decks: PDF, PowerPoint, Keynote and ODP. Each slide becomes an image.
+  - Video. Any format ffmpeg can read, including iPhone HEVC/MOV, is converted
+    to MP4 that plays everywhere. Video **streams** to screens, so long or 4K
+    files start at once and are never held in memory whole.
+- **Auto-updates.** On Windows screen PCs, an updater checks the server every
+  15 minutes. It installs a new version only if the server's signature on it is
+  valid. For managed fleets, the server also offers a signed CRX and an update
+  manifest, which work with Chrome/Edge policies.
+- **Windows auto-start.** The server runs in the background from boot and
+  restarts itself if it stops.
 
-## Quick start
+## Quick start (Windows)
 
-Requirements: Node.js 20+. Optional: `poppler-utils` for PDF decks, and
-LibreOffice for PowerPoint decks.
+1. Install Node.js (LTS) from https://nodejs.org.
+2. Download this repository as a ZIP and extract it.
+3. Double-click **`start-signage.bat`**.
+4. Open http://localhost:8080/admin/. The password is in
+   `data\admin-password.txt`. You can change it under **Settings**.
 
-```bash
-npm install
-ADMIN_PASSWORD='choose-a-password' npm start
-# → http://<server-ip>:8080/admin/
-```
+**Optional tools:**
 
-If you don't set `ADMIN_PASSWORD`, a password is generated on the first run.
-It is printed to the console and saved to `data/admin-password.txt`.
+| Tool | Needed for | Install with |
+|---|---|---|
+| ffmpeg | Video conversion and streaming | `winget install Gyan.FFmpeg` |
+| poppler | PDF decks | `winget install oschwartz10612.Poppler` |
+| LibreOffice | PowerPoint decks | https://www.libreoffice.org |
 
-### Windows
+Restart the server after installing a tool.
 
-Install Node.js (LTS) from https://nodejs.org, then double-click
-**`start-signage.bat`**. It installs anything missing, shows the addresses to
-use from other devices, and starts the server. Close the window to stop it.
+**Start with Windows.** Run **`windows\install-autostart.bat`** (it asks for
+admin rights). The server then starts at boot, before anyone logs in, and
+restarts if it stops. The script also opens the Windows firewall for the local
+network. Its log is in `data\server.log`. To undo it, run
+`windows\uninstall-autostart.bat`.
 
-The first time, set an admin password: open PowerShell in the folder and run
-`$env:ADMIN_PASSWORD="your-password"; npm.cmd start` once. Without that, use
-the generated one in `data\admin-password.txt`. You can change it later under
-**Settings**.
+**Other platforms:** `npm install`, then `npm start`.
 
-To update, download the new ZIP from GitHub and copy its contents over the
-folder. Your `data` folder (media, playlists, screens, password) is kept.
+## Setting up a screen
 
-### Your first screen
+**Windows screen PC (recommended)**
 
-1. **Media**: upload a few images or a PDF/PPTX deck.
-2. **Playlists**: create a playlist, add the media, set durations, then click
-   **Save & publish**.
-3. **Screens**: click **Add screen**, give it a name, and pick the playlist as
-   its default.
-4. Click **Add-on** on the screen card. Enter the server URL *as the screen PC
-   will reach it*, for example `http://192.168.1.20:8080`. Don't use
-   `localhost`. Then download the zip.
-5. On the screen PC:
-   1. Unzip the add-on to a permanent folder.
-   2. Open `chrome://extensions` (or `edge://extensions`) and turn on
-      **Developer mode**.
-   3. Click **Load unpacked** and pick the folder.
+1. In the console, click **Screens → Install add-on → Windows screen PC
+   installer**. Alternatively, open `http://<server>:8080/addon/` on the
+   screen PC itself.
+2. Unzip the download and run **`setup-screen.bat`**. It:
+   - installs the add-on into `C:\ProgramData\Signage\addon`,
+   - starts Chrome (or Edge) fullscreen on the player at every login,
+   - installs the updater.
+3. Load the add-on, which Chrome and Edge only allow by hand:
+   1. Open `chrome://extensions`.
+   2. Turn on **Developer mode**.
+   3. Click **Load unpacked** and pick `C:\ProgramData\Signage\addon`.
+4. The screen shows a 6-character code. In the console, go to **Screens →
+   Pair a screen** (or use the banner that appears), enter the code and pick a
+   name and playlist.
 
-   The player opens fullscreen.
+**Any computer:** download the Chrome/Edge add-on from **Install add-on**,
+unzip it, then use **Load unpacked** as above.
 
-**Preview** on a screen card gives you a link to the same player, which runs
-in any browser without the add-on, including Chrome or Safari on phones and
-tablets. Mobile browsers can't install extensions, so use this link to test on
-phones. Set the screen's **Server URL** to the PC's network address first, so
-the link doesn't point at `localhost`. Over plain http, phones play the content
-but don't keep an offline copy.
+**Firefox:** go to `about:debugging`, then **This Firefox → Load Temporary
+Add-on** and pick `manifest.json`. This lasts until Firefox restarts. For
+permanent use, the add-on must be signed by Mozilla (free, as an unlisted
+add-on). The Firefox version is not tested yet.
+
+**Pre-configured add-on.** On a screen card, click **Add-on**. That download
+pairs itself with that screen on first start, so no code is needed. Each
+download carries a one-time token, and a new download cancels the previous
+one.
+
+## Testing on phones and tablets
+
+Mobile browsers can't install add-ons, so phones use a **Preview link**
+instead. Click **Preview** on a screen, then **Copy**, and open the link on the
+phone. Before you do, set the screen's **Preview address** under **Edit** to
+`http://<server-ip>:8080`.
+
+Preview links are **not encrypted**. Use them for testing only. When you no
+longer need them, switch them off in **Settings**. From then on, only
+encrypted add-on screens can play content.
+
+## Security
+
+The design follows PGP's model of "encrypt to the recipient's public key,
+sign as the sender":
+
+| | |
+|---|---|
+| **Device identity** | Each add-on creates two P-256 key pairs with WebCrypto: one for signing and one for key exchange. The private keys are created *non-extractable* and stored in the browser profile, so they cannot be copied off the screen. The device proves it holds them with a signed challenge on every connection. |
+| **Content encryption** | Every file has its own random AES-256-GCM key. Files are sent as authenticated 1 MiB chunks, each bound to its file ID, its position and the total chunk count, so chunks can't be swapped or truncated. |
+| **Key wrapping** | A file's key is wrapped separately for each paired screen, under a key derived with HKDF-SHA256 from ECDH(server, device). Only that screen can unwrap it. |
+| **Signing** | Everything the server sends to a screen is signed with the server's ECDSA P-256 key. Screens only accept a signed message if it matches their own connection and has an increasing sequence number, so old messages can't be replayed and messages from another connection are rejected. The server's public key is built into the add-on (pinned). A spoofed server or a man-in-the-middle can't push content or commands. |
+| **At rest** | Screens cache chunks encrypted. Screenshots travel back to the server encrypted under the same per-screen key. |
+| **Updates** | The screen-PC updater installs a new add-on only if the server's signature on the download is valid. |
+| **Pairing** | Approving a code binds a device's public keys to a screen. **Unpair & reset access** (under **Edit**) revokes it immediately. |
+
+Limitations to be aware of:
+
+- **The console itself uses plain HTTP by default**, so your admin password
+  crosses the network unencrypted. To use HTTPS, set `TLS_CERT` and `TLS_KEY`,
+  or put the server behind a reverse proxy.
+- **Only approve pairing codes you can see on your own screen.** Anyone on
+  the LAN can run the add-on and show a code.
+- **Check the fingerprint once.** The add-on trusts the server key it was
+  downloaded with. When you install the first screen, check that the
+  fingerprint shown on it matches the one under **Settings → Security**.
+- **Back up `data/keys/`** along with the rest of `data/`. If you lose the
+  keys, every screen has to be paired again.
+- **Physical access.** Someone with access to an unlocked screen PC can watch
+  what it plays, though they can't extract its keys.
 
 ## Configuration
 
 | Env var          | Default        | Purpose |
 |------------------|----------------|---------|
-| `PORT`           | `8080`         | HTTP port |
+| `PORT`           | `8080`         | HTTP(S) port |
 | `HOST`           | `0.0.0.0`      | Bind address |
-| `DATA_DIR`       | `./data`       | Database (`db.json`) and uploaded media |
-| `ADMIN_PASSWORD` | generated      | Admin console password. If set, it overrides the stored password |
-| `PUBLIC_URL`     | request host   | Default server URL built into add-ons, e.g. `https://signage.example.com` |
+| `DATA_DIR`       | `./data`       | Database, media, screenshots and keys |
+| `ADMIN_PASSWORD` | generated      | If set, overrides the stored admin password at every start |
+| `PUBLIC_URL`     | –              | Preferred address for add-ons and auto-updates, e.g. `https://signage.example.com` |
+| `TLS_CERT`, `TLS_KEY` | –         | PEM files: serve HTTPS directly |
+| `MDNS`           | on             | Set to `off` to stop announcing `signage.local` |
+| `MDNS_NAME`      | `signage`      | Announce under a different `<name>.local` |
+| `VIDEO_CODEC`    | `h264`         | `vp9` gives smaller files, but only for Chrome/Edge/Firefox screens (not iPhones) |
+| `VIDEO_MAX_SIZE` | `1920`         | Longest video side in pixels. Use `3840` for 4K screens |
+| `DECK_WIDTH`     | `1920`         | Pixel width of rendered slides |
 | `MAX_UPLOAD_MB`  | `2048`         | Per-file upload limit |
-| `DECK_WIDTH`     | `1920`         | Pixel width for rendered slides. Use `3840` for 4K screens |
 
-Each screen also has a **Server URL** setting. Use it when screens reach the
-server at different addresses, for example the LAN IP inside the building and
-a public hostname from a branch office.
+## Managed roll-out (Group Policy / Intune)
 
-## Deploying screen PCs
+**Install add-on → Managed roll-out** in the console shows the extension ID
+and update URL. Add `"<id>;<update URL>"` to Chrome's or Edge's
+`ExtensionInstallForcelist` policy. The browsers then install the signed CRX
+and keep it updated with no clicks.
 
-**Starting at boot.** Set the browser to launch at login. The add-on opens the
-player itself. For a cleaner kiosk, add these flags to the browser shortcut:
-
-```
-chrome.exe --kiosk --noerrdialogs --disable-session-crashed-bubble --autoplay-policy=no-user-gesture-required
-```
-
-`--autoplay-policy=no-user-gesture-required` lets videos play with sound.
-
-**Fleet roll-out.** "Load unpacked" is fine for testing. For many PCs, use
-Chrome or Edge enterprise policy (GPO or Intune) to load the add-on folder
-(`ExtensionInstallForcelist` with a self-hosted CRX, or
-`--load-extension=<dir>` in the kiosk shortcut). Users then can't remove it.
-
-**WAN / remote sites.** Put the server behind a TLS reverse proxy such as
-Caddy or nginx. Forward `/ws` with the WebSocket `Upgrade` headers, and set
-`PUBLIC_URL=https://…`. Media is cached on each screen, so playback doesn't
-depend on the WAN link once the content has downloaded.
-
-## Security model
-
-- The admin console uses a password and an HMAC-signed, HttpOnly, SameSite
-  session cookie.
-- Each screen has its own random token, which is built into its add-on. A
-  player sends the token in its WebSocket `hello` message, and as a Bearer
-  header when fetching media. Media files can only be read by the admin or a
-  registered screen.
-- Use **Regenerate token** (in the screen's Edit dialog) if an add-on zip
-  leaks. The old player is disconnected immediately.
+On Windows, this policy only works on PCs that are domain-joined, Intune/MDM
+managed, or enrolled in the browser's cloud management. Set `PUBLIC_URL`, so
+the update URL doesn't depend on mDNS.
 
 ## Development
 
 ```bash
 npm run dev     # restart on change
-npm test        # scheduler unit tests + API/WebSocket/add-on/deck integration tests
+npm test        # unit + integration tests (crypto protocol driven through WebCrypto)
 ```
 
 ```
 server/
-  app.js         REST API, uploads, static UIs
-  realtime.js    WebSocket hub: auth, manifest push, status, commands, schedule ticker
-  schedule.js    which playlist a screen should show right now
-  manifest.js    playlist → flat list of renderable items + content hash
-  extension.js   builds the per-screen add-on zip
-  convert.js     PDF / PowerPoint → slide images
+  app.js         REST API, uploads, add-on downloads, static UIs
+  realtime.js    WebSocket hub: device auth, pairing, signed messages, sessions, screenshots
+  crypto.js      server keys, wrapping, chunk encryption, CRX3 packaging
+  network.js     mDNS announcer and the list of addresses screens should try
+  schedule.js    which playlist a screen shows right now (own + group rules)
+  manifest.js    playlist → items; plain URLs (previews) or encrypted refs (devices)
+  extension.js   builds the add-on (Chrome/Edge, Firefox, CRX, screen-PC installer)
+  convert.js     PDF/PowerPoint → slides, video → streamable MP4
   store.js       JSON-file datastore
-player/          the player: runs in the add-on and in browser preview
-extension/       add-on service worker (window management, watchdog, keep-awake)
+player/          the player: runs in the add-on and in preview links
+extension/       add-on background (window management, watchdog, keep-awake, updates)
 admin/           admin console (vanilla JS, no build step)
+windows/         server auto-start and screen-PC setup/update scripts
 ```
 
-The player code lives in `player/` and is copied into every add-on when it is
-generated. After changing the player, re-download the add-on for each screen.
-In the console, the screen's status shows which player version is running.
+After changing anything in `player/` or `extension/`, bump `ADDON_VERSION` in
+`server/extension.js`. Screens with the updater then pick up the change within
+15 minutes.
 
 ## Roadmap
 
-- **Video at scale.** Large files currently go into the Cache API as whole
-  blobs. For long or 4K videos, switch to range-request streaming with a
-  service-worker cache, and add server-side transcoding (`ffmpeg`) to H.264 or
-  VP9 at each screen's resolution.
-- Screen groups / tags so one schedule applies to many screens.
-- Screenshots from players for remote verification.
-- Signed CRX packaging and an auto-update URL, so add-on updates roll out
-  without reinstalling.
-- Move from the JSON store to SQLite or Postgres, and add multiple admin users
-  with roles.
+- Firefox: signed builds and auto-update.
+- Multiple admin users with roles.
+- Move from the JSON store to SQLite or Postgres for large fleets.

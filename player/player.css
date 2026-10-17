@@ -17,7 +17,10 @@ html, body {
 #idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; background: #0b0d12; }
 #idle[hidden] { display: none; }
 .idle-name { font-size: 4vmin; font-weight: 600; }
-.idle-msg { font-size: 2.2vmin; opacity: 0.6; }
+.idle-msg { font-size: 2.2vmin; opacity: 0.6; text-align: center; max-width: 80%; }
+.idle-code { font: 700 12vmin/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.15em; padding: 2vmin 4vmin; border-radius: 2vmin; background: #1b2232; color: #fff; }
+.idle-code[hidden] { display: none; }
+.idle-hint { font-size: 1.6vmin; opacity: 0.45; text-align: center; max-width: 80%; font-family: ui-monospace, monospace; }
 
 #identify {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;

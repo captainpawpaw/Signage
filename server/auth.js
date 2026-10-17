@@ -79,19 +79,26 @@ export function isAdmin(store, req) {
   return expected.length === sig.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
 }
 
-// Screens authenticate with their per-screen token, either as a bearer header
-// (fetch from the player) or ?token= (plain <video src> fallbacks).
-export function screenFromRequest(store, req) {
+// Unencrypted players (browser previews, v1 add-ons) authenticate with the
+// screen's preview token, as a bearer header or ?pt= on plain <img>/<video> URLs.
+// They are only accepted while "allow unencrypted players" is on.
+export function previewScreenFromRequest(store, req) {
+  if (!store.settings.allowPlaintext) return null;
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : req.query?.token;
-  return token ? screenByToken(store, token) : null;
+  const token = header.startsWith('Bearer ') ? header.slice(7) : req.query?.pt || req.query?.token;
+  return token ? screenByPreviewToken(store, token) : null;
 }
 
-export function screenByToken(store, token) {
-  if (typeof token !== 'string') return null;
+export function screenByPreviewToken(store, token) {
+  return findByToken(store.screens, 'previewToken', token);
+}
+
+export function findByToken(list, field, token) {
+  if (typeof token !== 'string' || !token) return null;
   const b = Buffer.from(token);
-  return store.screens.find((s) => {
-    const a = Buffer.from(s.token);
+  return list.find((s) => {
+    if (typeof s[field] !== 'string') return false;
+    const a = Buffer.from(s[field]);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }) || null;
 }

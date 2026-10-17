@@ -4,6 +4,16 @@ title Signage server
 cd /d "%~dp0"
 if not defined PORT set PORT=8080
 
+rem If the server was installed to start with Windows, it is already running.
+schtasks /Query /TN "Signage Server" >nul 2>&1
+if not errorlevel 1 (
+  echo The Signage server already runs automatically in the background.
+  echo Open http://localhost:%PORT%/admin/ in your browser.
+  echo To stop the automatic start, run windows\uninstall-autostart.bat
+  pause
+  exit /b 0
+)
+
 where node >nul 2>nul
 if errorlevel 1 (
   echo Node.js is not installed. Download the LTS version from https://nodejs.org and run this again.

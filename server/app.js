@@ -89,7 +89,7 @@ function migrate(store) {
     // (unencrypted) preview token so nothing breaks during the upgrade.
     if (!screen.previewToken) screen.previewToken = screen.token || randomToken();
     if (screen.enrollToken === undefined) screen.enrollToken = randomToken();
-    if (!screen.shortCode) screen.shortCode = uniqueShortCode(store);
+    if (screen.shortCode === undefined) screen.shortCode = null;
     if (screen.device === undefined) screen.device = null;
     screen.groupIds ||= [];
     delete screen.token;
@@ -163,6 +163,10 @@ export async function createApp({
       status: hub.status(s.id),
     };
   };
+  const previewLinks = (screen) => ({
+    url: `/player/player.html#token=${encodeURIComponent(screen.previewToken)}`,
+    shortUrl: screen.shortCode ? `/p/${screen.shortCode}` : null,
+  });
   const findOr404 = (list, itemId, what) => {
     const item = list.find((x) => x.id === itemId);
     if (!item) throw new HttpError(404, `${what} not found`);
@@ -206,7 +210,7 @@ export async function createApp({
     const m = misses.get(req.ip);
     if (m && m.until > now && m.count >= 20) throw new HttpError(429, 'Too many wrong codes – try again in 10 minutes');
     const code = String(req.params.code).toUpperCase();
-    const screen = store.settings.allowPlaintext ? store.screens.find((s) => s.shortCode === code) : null;
+    const screen = store.settings.allowPlaintext ? store.screens.find((s) => s.shortCode && s.shortCode === code) : null;
     if (!screen) {
       misses.set(req.ip, m && m.until > now ? { ...m, count: m.count + 1 } : { count: 1, until: now + 10 * 60_000 });
       return res.status(404).type('html').send('<!doctype html><meta name="viewport" content="width=device-width"><p style="font:18px system-ui;margin:40px">This signage link is not valid (any more). Ask for a new one.</p>');
@@ -312,7 +316,7 @@ export async function createApp({
     if (!b.name?.trim()) throw new HttpError(400, 'Name is required');
     const screen = {
       id: id(), name: b.name.trim(), location: b.location || '', notes: b.notes || '',
-      previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null,
+      previewToken: randomToken(), enrollToken: randomToken(), shortCode: null, device: null,
       groupIds: cleanGroupIds(store, b.groupIds),
       timezone: validTimezone(b.timezone) ? b.timezone : DEFAULT_TIMEZONE,
       serverUrl: b.serverUrl || '', defaultPlaylistId: b.defaultPlaylistId || null,
@@ -359,7 +363,10 @@ export async function createApp({
   // pre-configured downloads and preview links all stop working.
   app.post('/api/screens/:id/regenerate-token', (req, res) => {
     const screen = findOr404(store.screens, req.params.id, 'Screen');
-    Object.assign(screen, { previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null });
+    Object.assign(screen, {
+      previewToken: randomToken(), enrollToken: randomToken(), device: null,
+      shortCode: screen.shortCode ? uniqueShortCode(store) : null,
+    });
     store.save();
     hub.disconnect(screen.id);
     res.json(screenView(screen));
@@ -379,7 +386,23 @@ export async function createApp({
   app.get('/api/screens/:id/preview-url', (req, res) => {
     const screen = findOr404(store.screens, req.params.id, 'Screen');
     if (!store.settings.allowPlaintext) throw new HttpError(409, 'Unencrypted previews are switched off in Settings');
-    res.json({ url: `/player/player.html#token=${encodeURIComponent(screen.previewToken)}`, shortUrl: `/p/${screen.shortCode}` });
+    res.json(previewLinks(screen));
+  });
+
+  // Short links are optional: the admin creates (or removes) one per screen.
+  app.post('/api/screens/:id/short-link', (req, res) => {
+    const screen = findOr404(store.screens, req.params.id, 'Screen');
+    if (!store.settings.allowPlaintext) throw new HttpError(409, 'Unencrypted previews are switched off in Settings');
+    screen.shortCode = uniqueShortCode(store);
+    store.save();
+    res.json(previewLinks(screen));
+  });
+
+  app.delete('/api/screens/:id/short-link', (req, res) => {
+    const screen = findOr404(store.screens, req.params.id, 'Screen');
+    screen.shortCode = null;
+    store.save();
+    res.json(previewLinks(screen));
   });
 
   app.get('/api/screens/:id/screenshot.jpg', (req, res) => {
@@ -413,7 +436,7 @@ export async function createApp({
       if (!b.name?.trim()) throw new HttpError(400, 'Choose a screen or give the new one a name');
       screen = {
         id: id(), name: b.name.trim(), location: b.location || '', notes: '',
-        previewToken: randomToken(), enrollToken: randomToken(), shortCode: uniqueShortCode(store), device: null, groupIds: cleanGroupIds(store, b.groupIds),
+        previewToken: randomToken(), enrollToken: randomToken(), shortCode: null, device: null, groupIds: cleanGroupIds(store, b.groupIds),
         timezone: DEFAULT_TIMEZONE, serverUrl: '', defaultPlaylistId: b.defaultPlaylistId || null,
         settings: {}, schedule: [], createdAt: new Date().toISOString(), lastSeen: null,
       };

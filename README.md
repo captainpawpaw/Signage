@@ -124,10 +124,11 @@ instead. Click **Preview** on a screen, then **Copy**, and open the link on the
 phone. Before you do, set the screen's **Preview address** under **Edit** to
 `http://<server-ip>:8080`.
 
-Each screen also has a **short link**, such as
-`http://192.168.1.20:8080/p/K7Q2MX`. It is easy to type on a TV or a phone.
-Wrong guesses are rate-limited, and **Unpair & reset access** gives the screen
-a new code.
+If you want an address that is easier to type on a TV or a phone, click
+**Create short link** in the Preview dialog. That gives an address such as
+`http://192.168.1.20:8080/p/K7Q2MX`. Short links are off until you create
+them, and you can remove one at any time. Wrong guesses are rate-limited, and
+**Unpair & reset access** replaces the code.
 
 Preview links are **not encrypted**. Use them for testing only. When you no
 longer need them, switch them off in **Settings**. From then on, only

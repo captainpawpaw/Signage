@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS = {
   fit: 'contain',           // contain | cover
   background: '#000000',
   transition: 'fade',       // fade | none
+  power: 'auto',            // auto (detect TV sticks) | low | standard
 };
 
 // The manifest is everything a player needs to render: resolved playlist,

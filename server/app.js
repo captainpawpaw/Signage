@@ -39,6 +39,7 @@ function cleanSettings(input = {}) {
   if (['contain', 'cover'].includes(input.fit)) out.fit = input.fit;
   if (['fade', 'none'].includes(input.transition)) out.transition = input.transition;
   if (/^#[0-9a-f]{3,8}$/i.test(input.background || '')) out.background = input.background;
+  if (['auto', 'low', 'standard'].includes(input.power)) out.power = input.power;
   return out;
 }
 

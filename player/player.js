@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.0.0';
+  const PLAYER_VERSION = '2.0.1';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -22,6 +22,13 @@
   const STATUS_MS = 20_000;
   const SCREENSHOT_MS = 5 * 60_000;
   const BUFFER_AHEAD_S = 30;
+
+  // TV sticks and smart-TV browsers are slow: no cross-fades (two layers being
+  // composited at once), no periodic screenshots of video frames. Detected
+  // automatically, or forced per screen in the console.
+  const WEAK_DEVICE = /\bAFT\w+|Silk\/|SMART-TV|SmartTV|Tizen|Web0S|webOS|BRAVIA|Android TV|GoogleTV|CrKey|Roku/i.test(navigator.userAgent)
+    || (navigator.deviceMemory && navigator.deviceMemory <= 2);
+  let lowPower = WEAK_DEVICE;
 
   const cfg = self.SIGNAGE_CONFIG?.signKey ? self.SIGNAGE_CONFIG : null;
   const MODE = cfg ? 'device' : 'preview';
@@ -236,7 +243,8 @@
   }
 
   function applySettings(s) {
-    stage.className = [s.orientation || 'landscape', s.transition === 'none' ? '' : 'fade'].join(' ');
+    lowPower = s.power === 'low' || (s.power !== 'standard' && WEAK_DEVICE);
+    stage.className = [s.orientation || 'landscape', s.transition === 'none' || lowPower ? '' : 'fade'].join(' ');
     stage.style.setProperty('--bg', s.background || '#000');
     stage.style.setProperty('--fit', s.fit || 'contain');
   }
@@ -290,8 +298,11 @@
       layer.classList.add('active');
       const old = layers[front];
       front = back;
-      // Let the cross-fade finish before tearing down the outgoing element.
-      setTimeout(() => { if (old !== layers[front]) stopLayer(old); }, 900);
+      // Let the cross-fade finish before tearing down the outgoing element
+      // (straight away without a fade, so two videos never decode at once).
+      const fading = stage.classList.contains('fade');
+      if (fading) setTimeout(() => { if (old !== layers[front]) stopLayer(old); }, 900);
+      else stopLayer(old);
       sendStatus();
     };
     let failed = false;
@@ -488,7 +499,7 @@
     const item = manifest.items[index];
     send({
       type: 'status', version: manifest.version, playlistId: manifest.playlist?.id || null,
-      index, itemId: item?.id || null, itemCount: manifest.items.length,
+      index, itemId: item?.id || null, itemCount: manifest.items.length, lowPower,
     });
   }
 
@@ -546,7 +557,7 @@
       const el = $('#identify');
       el.replaceChildren(manifest?.screen?.name || 'Screen');
       const small = document.createElement('small');
-      small.textContent = `${manifest?.playlist?.name || 'No playlist'} · ${screen.width}×${screen.height} · ${MODE === 'device' ? 'encrypted' : 'preview'}`;
+      small.textContent = `${manifest?.playlist?.name || 'No playlist'} · ${screen.width}×${screen.height} · ${MODE === 'device' ? 'encrypted' : 'preview'}${lowPower ? ' · low-power' : ''}`;
       el.append(small);
       el.hidden = false;
       setTimeout(() => { el.hidden = true; }, 10_000);
@@ -579,7 +590,7 @@
     connect();
     setInterval(poll, POLL_MS);
     setInterval(sendStatus, STATUS_MS);
-    setInterval(sendScreenshot, SCREENSHOT_MS);
+    setInterval(() => { if (!lowPower) sendScreenshot(); }, SCREENSHOT_MS);
   }
   boot();
 })();

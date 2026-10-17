@@ -172,7 +172,7 @@ async function screensView() {
         h('dt', {}, 'Location'), h('dd', {}, s.location || '—'),
         h('dt', {}, 'Now playing'), h('dd', {}, plName(s.activePlaylistId), h('span', { class: 'muted' }, via)),
         h('dt', {}, 'Progress'), h('dd', {}, showing),
-        h('dt', {}, 'Display'), h('dd', {}, st.display ? `${st.display.width}×${st.display.height} · ${s.settings.orientation}` : s.settings.orientation),
+        h('dt', {}, 'Display'), h('dd', {}, st.display ? `${st.display.width}×${st.display.height} · ${s.settings.orientation}${st.lowPower ? ' · low-power' : ''}` : s.settings.orientation),
         h('dt', {}, 'Address'), h('dd', {}, st.ip || '—'),
         st.addonVersion && st.addonVersion !== info.addonVersion
           ? [h('dt', {}, 'Add-on'), h('dd', { class: 'status-processing' }, `v${st.addonVersion} – update to v${info.addonVersion} pending`)] : null),
@@ -342,6 +342,8 @@ function screenEditor(s, playlists, groups) {
     field('Fit', select(draft.settings, 'fit', [['contain', 'Fit (letterbox)'], ['cover', 'Fill (crop)']])),
     field('Transition', select(draft.settings, 'transition', [['fade', 'Cross-fade'], ['none', 'Cut']])),
     field('Background', h('input', { type: 'color', value: draft.settings.background || '#000000', oninput: bind(draft.settings, 'background') })),
+    field('Device type', select(draft.settings, 'power', [['auto', 'Auto-detect'], ['low', 'Low-power (TV stick, smart TV)'], ['standard', 'Standard PC']]),
+      'Low-power turns off cross-fades and periodic screenshots so video stays smooth. Fire TV and smart-TV browsers are detected automatically.'),
     field('Preview address', h('input', { value: draft.serverUrl, oninput: bind(draft, 'serverUrl'), placeholder: info.publicUrl || location.origin }),
       'Server address used in this screen’s preview links, e.g. http://192.168.1.20:8080. The add-on finds the server by itself.'),
     field('Notes', h('input', { value: draft.notes, oninput: bind(draft, 'notes') })));

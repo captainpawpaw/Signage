@@ -3,7 +3,10 @@ html, body {
   background: #000; color: #fff; cursor: none;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
-#stage { position: fixed; left: 50%; top: 50%; width: 100vw; height: 100vh; transform: translate(-50%, -50%); background: var(--bg, #000); }
+/* Plain landscape uses no transform at all: TV sticks and other Android devices
+   only use their hardware video path for untransformed video. */
+#stage { position: fixed; inset: 0; background: var(--bg, #000); }
+#stage.portrait, #stage.portrait-flipped, #stage.landscape-flipped { inset: auto; left: 50%; top: 50%; width: 100vw; height: 100vh; }
 #stage.portrait, #stage.portrait-flipped { width: 100vh; height: 100vw; }
 #stage.portrait { transform: translate(-50%, -50%) rotate(90deg); }
 #stage.portrait-flipped { transform: translate(-50%, -50%) rotate(-90deg); }

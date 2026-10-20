@@ -55,10 +55,12 @@ mkdir -p "$MNT/boot/efi"
 ESP_MOUNTED=1
 mount "$(part 2)" "$MNT/boot/efi" 2>/dev/null || ESP_MOUNTED=""
 # One file system only: /proc, /sys, /dev, /run and /boot/efi are not copied.
-tar -C "$SOURCE" --one-file-system --numeric-owner --xattrs --acls -cpf - \
-    --exclude=./boot/efi --exclude=./tmp/* --exclude=./var/tmp/* \
+# tar exits 1 for "file changed as we read it" on a running system: harmless.
+{ tar -C "$SOURCE" --one-file-system --numeric-owner --xattrs --acls -cpf - \
+    --exclude=./boot/efi --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
+    --exclude=./tmp/* --exclude=./var/tmp/* \
     --exclude=./var/lib/signage-os/firstboot.log --exclude=./lost+found . \
-  | tar -C "$MNT" --numeric-owner --xattrs --xattrs-include='*' --acls -xpf -
+  || [ $? = 1 ]; } | tar -C "$MNT" --numeric-owner --xattrs --xattrs-include='*' --acls -xpf -
 mkdir -p "$MNT"/{proc,sys,dev,run,tmp,boot/efi}
 chmod 1777 "$MNT/tmp"
 if [ -d "$SOURCE/boot/efi" ] && [ "$(ls -A "$SOURCE/boot/efi")" ]; then

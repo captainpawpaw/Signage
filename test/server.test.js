@@ -359,6 +359,82 @@ test('Linux player: generic setup file, pre-configured file and signed agent pac
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('schedule section: entries for screens and groups, media picked directly, week view', async () => {
+  const lobby = shared.pl;
+  const g = (await call('POST', '/api/groups', { name: 'Floor 2' })).body;
+  const a = (await call('POST', '/api/screens', { name: 'Sched A', timezone: 'UTC', defaultPlaylistId: lobby.id, groupIds: [g.id] })).body;
+  const b = (await call('POST', '/api/screens', { name: 'Sched B', timezone: 'UTC', defaultPlaylistId: lobby.id })).body;
+
+  // Validation
+  assert.equal((await call('POST', '/api/schedules', { content: { type: 'playlist', playlistId: lobby.id } })).status, 400);
+  assert.equal((await call('POST', '/api/schedules', { targets: { screenIds: [a.id] }, content: { type: 'media', items: [] } })).status, 400);
+
+  // Media picked directly, all day, for the group and screen B.
+  const res = await call('POST', '/api/schedules', {
+    name: 'Fire drill notice', targets: { groupIds: [g.id], screenIds: [b.id] },
+    content: { type: 'media', items: [{ mediaId: shared.image.id }], seconds: 7 }, start: '00:00', end: '00:00', priority: 1,
+  });
+  assert.equal(res.status, 201);
+  const entry = res.body;
+  assert.equal(entry.content.type, 'media');
+  assert.equal(entry.content.seconds, 7);
+  const hidden = (await call('GET', '/api/playlists')).body.find((p) => p.id === entry.playlistId);
+  assert.ok(hidden?.hidden, 'kept as a hidden playlist');
+
+  for (const sid of [a.id, b.id]) {
+    const m = (await call('GET', `/api/screens/${sid}/manifest`)).body;
+    assert.equal(m.playlist.id, entry.playlistId);
+    assert.equal(m.items[0].duration, 7000);
+  }
+  const viewA = (await call('GET', `/api/screens/${a.id}`)).body;
+  assert.equal(viewA.activeRuleId, entry.id);
+  assert.deepEqual(viewA.activeGroup, { id: g.id, name: 'Floor 2' });
+
+  // Week view: 7 local days, blocks name the entry.
+  const week = (await call('GET', `/api/schedule/week?screenId=${b.id}`)).body;
+  assert.equal(week.dayStarts.length, 8);
+  assert.ok(week.blocks.every((x) => x.scheduleName === 'Fire drill notice'));
+  assert.equal(week.blocks[0].from, week.dayStarts[0]);
+  assert.equal(week.blocks.at(-1).to, week.dayStarts[7]);
+  assert.equal((await call('GET', `/api/schedule/week?groupId=${g.id}`)).status, 200);
+
+  // Switch to a playlist and narrow to lunchtime on screen A only.
+  const edited = (await call('PUT', `/api/schedules/${entry.id}`, {
+    targets: { screenIds: [a.id], groupIds: [] }, content: { type: 'playlist', playlistId: lobby.id }, start: '12:00', end: '13:00', days: [1, 2, 3, 4, 5],
+  })).body;
+  assert.equal(edited.content.type, 'playlist');
+  assert.equal((await call('GET', '/api/playlists')).body.some((p) => p.id === entry.playlistId), false, 'hidden playlist removed');
+  const weekA = (await call('GET', `/api/schedule/week?screenId=${a.id}`)).body;
+  const lunch = weekA.blocks.filter((x) => x.scheduleId === entry.id);
+  assert.ok(lunch.length === 5, `5 weekday lunch blocks, got ${lunch.length}`);
+  for (const x of lunch) assert.equal(x.to - x.from, 3600_000);
+
+  await call('DELETE', `/api/schedules/${entry.id}`);
+  assert.equal((await call('GET', '/api/schedules')).body.some((e) => e.id === entry.id), false);
+  await call('DELETE', `/api/screens/${a.id}`);
+  await call('DELETE', `/api/screens/${b.id}`);
+  await call('DELETE', `/api/groups/${g.id}`);
+});
+
+test('rules stored on screens and groups move into the schedule section', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'signage-migrate-'));
+  fs.writeFileSync(path.join(dir, 'db.json'), JSON.stringify({
+    settings: {}, media: [], fileKeys: {},
+    playlists: [{ id: 'p1', name: 'Morning', items: [] }],
+    groups: [{ id: 'g1', name: 'G', schedule: [{ id: 'r2', playlistId: 'p1', start: '09:00', end: '10:00', priority: 0 }] }],
+    screens: [{ id: 's1', name: 'S', groupIds: ['g1'], schedule: [{ id: 'r1', playlistId: 'p1', start: '08:00', end: '09:00', priority: 3 }] }],
+  }));
+  const app2 = await createApp({ dataDir: dir, adminPassword: 'x', mdns: false, log: () => {} });
+  assert.deepEqual(app2.store.schedules.map((e) => [e.id, e.name, e.priority, e.targets]), [
+    ['r1', 'Morning', 3, { screenIds: ['s1'], groupIds: [] }],
+    ['r2', 'Morning', 0, { screenIds: [], groupIds: ['g1'] }],
+  ]);
+  assert.deepEqual(app2.store.screens[0].schedule, []);
+  assert.deepEqual(app2.store.groups[0].schedule, []);
+  await app2.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('short links resist guessing', async () => {
   let last;
   for (let i = 0; i < 22; i++) last = (await fetch(`${base}/p/ZZZZZ${i % 10}`, { redirect: 'manual' })).status;

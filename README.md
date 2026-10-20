@@ -44,9 +44,16 @@ fullscreen.
   a full-screen overlay. Each screen can use this default, have its own, or
   show nothing. Screens store the notice with their content, so it works while
   the server is unreachable.
-- **Scheduling.** Each screen has a default playlist plus rules. A rule can
-  set days of the week, a time window (overnight windows are allowed), a date
-  range and a priority. Rules use each screen's own time zone.
+- **Scheduling (the Schedule section).** Upload media as usual, then open
+  **Schedule** and click **+ Schedule content**:
+  - **Where:** pick any mix of screens and groups.
+  - **What:** an existing playlist, or media picked directly.
+  - **When:** always, or on chosen days and times, with an optional date range
+    and priority.
+
+  A week view for each screen or group shows exactly what will play and when.
+  There you can also set what plays when nothing is scheduled. Times use each
+  screen's own time zone, and windows can run overnight.
   - **Switches on time, even offline.** Each screen receives a timetable of
     its playlist changes for the next 8 days, along with the content for each
     playlist. It switches by itself at the right time, whether or not the

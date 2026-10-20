@@ -42,7 +42,7 @@ function playlistItems(store, playlist) {
 }
 
 export function buildManifest(store, screen, now = new Date()) {
-  const timeline = scheduleTimeline(screen, store.groups, now.getTime());
+  const timeline = scheduleTimeline(screen, store, now.getTime());
   const currentId = playlistAt(timeline, now.getTime());
   const playlists = {};
   for (const id of new Set([currentId, ...timeline.segments.map((s) => s.playlistId)])) {
@@ -57,7 +57,9 @@ export function buildManifest(store, screen, now = new Date()) {
     settings: { ...DEFAULT_SETTINGS, ...screen.settings },
     offline: offlineNotice(store.settings, screen),
     // Players switch by themselves at these times, even while offline.
-    timeline: timeline.segments.map((seg) => ({ from: seg.from, playlistId: playlists[seg.playlistId] ? seg.playlistId : null })),
+    timeline: timeline.segments
+      .map((seg) => ({ from: seg.from, playlistId: playlists[seg.playlistId] ? seg.playlistId : null }))
+      .filter((seg, i, all) => i === 0 || seg.playlistId !== all[i - 1].playlistId),
     timelineEnd: timeline.end,
     playlists,
     items: current?.items || [], // the playlist on now (also for players before 2.2)

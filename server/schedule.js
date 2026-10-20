@@ -53,30 +53,52 @@ export function ruleMatches(rule, parts) {
   return false;
 }
 
-export function screenGroups(screen, groups = []) {
+// `ctx` is either the list of groups (older callers, tests) or anything with
+// { groups, schedules }, e.g. the store.
+function context(ctx) {
+  if (Array.isArray(ctx)) return { groups: ctx, schedules: [] };
+  return { groups: ctx?.groups || [], schedules: ctx?.schedules || [] };
+}
+
+export function screenGroups(screen, ctx = []) {
+  const { groups } = context(ctx);
   return (screen.groupIds || []).map((id) => groups.find((g) => g.id === id)).filter(Boolean);
 }
 
-export function effectiveRules(screen, groups = []) {
+// Every rule that applies to a screen, in tie-break order: the screen's own
+// rules, schedule entries aimed at the screen, entries aimed at its groups,
+// then rules stored on its groups.
+export function effectiveRules(screen, ctx = []) {
+  const { schedules } = context(ctx);
+  const memberGroups = screenGroups(screen, ctx);
+  const groupIds = new Set(memberGroups.map((g) => g.id));
+  const groupRef = (g) => (g ? { id: g.id, name: g.name } : null);
   const own = (screen.schedule || []).map((r) => ({ ...r, group: null }));
-  const inherited = screenGroups(screen, groups).flatMap((g) => (g.schedule || []).map((r) => ({ ...r, group: { id: g.id, name: g.name } })));
-  return own.concat(inherited);
+  const direct = schedules.filter((e) => e.targets?.screenIds?.includes(screen.id)).map((e) => ({ ...e, group: null }));
+  const viaGroup = schedules
+    .filter((e) => !e.targets?.screenIds?.includes(screen.id) && e.targets?.groupIds?.some((g) => groupIds.has(g)))
+    .map((e) => ({ ...e, group: groupRef(memberGroups.find((g) => e.targets.groupIds.includes(g.id))) }));
+  const inherited = memberGroups.flatMap((g) => (g.schedule || []).map((r) => ({ ...r, group: groupRef(g) })));
+  return [...own, ...direct, ...viaGroup, ...inherited];
 }
 
-export function activeRule(screen, now = new Date(), groups = []) {
+export function activeRule(screen, now = new Date(), ctx = []) {
   const parts = localParts(now, screen.timezone || DEFAULT_TIMEZONE);
   let best = null;
-  for (const rule of effectiveRules(screen, groups)) {
+  for (const rule of effectiveRules(screen, ctx)) {
     if (rule.enabled === false || !ruleMatches(rule, parts)) continue;
     if (!best || (rule.priority || 0) > (best.priority || 0)) best = rule;
   }
   return best;
 }
 
-export function resolvePlaylistId(screen, now = new Date(), groups = []) {
-  const rule = activeRule(screen, now, groups);
-  if (rule) return rule.playlistId;
-  return screen.defaultPlaylistId || screenGroups(screen, groups).find((g) => g.defaultPlaylistId)?.defaultPlaylistId || null;
+export function defaultPlaylistId(screen, ctx = []) {
+  return screen.defaultPlaylistId || screenGroups(screen, ctx).find((g) => g.defaultPlaylistId)?.defaultPlaylistId || null;
+}
+
+export function resolvePlaylistId(screen, now = new Date(), ctx = []) {
+  const rule = activeRule(screen, now, ctx);
+  return rule ? rule.playlistId : defaultPlaylistId(screen, ctx);
 }
 
 // ---------- timetable for offline switching ----------
@@ -119,10 +141,10 @@ const timelineCache = new Map();
 
 // Minute-by-minute evaluation over the window, using a zone offset refreshed
 // every 15 minutes (DST changes happen on those boundaries). Cached per day.
-export function scheduleTimeline(screen, groups = [], now = Date.now(), days = TIMELINE_DAYS) {
+export function scheduleTimeline(screen, ctx = [], now = Date.now(), days = TIMELINE_DAYS) {
   const timeZone = screen.timezone || DEFAULT_TIMEZONE;
-  const rules = effectiveRules(screen, groups).filter((r) => r.enabled !== false);
-  const fallback = screen.defaultPlaylistId || screenGroups(screen, groups).find((g) => g.defaultPlaylistId)?.defaultPlaylistId || null;
+  const rules = effectiveRules(screen, ctx).filter((r) => r.enabled !== false);
+  const fallback = defaultPlaylistId(screen, ctx);
   const start = Math.floor(now / DAY) * DAY; // UTC midnight: stable for a whole day
   const end = start + days * DAY;
   const key = JSON.stringify([timeZone, rules, fallback, start, days]);
@@ -149,7 +171,9 @@ export function scheduleTimeline(screen, groups = [], now = Date.now(), days = T
       if (ruleMatches(rule, parts) && (!best || (rule.priority || 0) > (best.priority || 0))) best = rule;
     }
     const playlistId = best ? best.playlistId : fallback;
-    if (!segments.length || segments[segments.length - 1].playlistId !== playlistId) segments.push({ from: t, playlistId });
+    const ruleId = best?.id || null;
+    const last = segments[segments.length - 1];
+    if (!last || last.playlistId !== playlistId || last.ruleId !== ruleId) segments.push({ from: t, playlistId, ruleId });
   }
   const result = { start, end, segments };
   if (timelineCache.size > 500) timelineCache.clear();
@@ -168,4 +192,20 @@ export function playlistAt(timeline, t) {
     current = s.playlistId;
   }
   return current;
+}
+
+// UTC instants of local midnight for `count` days from today (plus the next
+// one, so each day has an end), in the given time zone. DST-safe.
+export function localMidnights(timeZone, now = Date.now(), count = 7) {
+  const off = zoneOffset(now, timeZone);
+  const todayLocal = Math.floor((now + off) / DAY) * DAY;
+  const out = [];
+  for (let i = 0; i <= count; i++) {
+    const local = todayLocal + i * DAY;
+    let utc = local - off;
+    utc = local - zoneOffset(utc, timeZone);
+    utc = local - zoneOffset(utc, timeZone);
+    out.push(utc);
+  }
+  return out;
 }

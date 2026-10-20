@@ -77,6 +77,9 @@ function thumb(media) {
   return h('div', { class: 'thumb' }, inner, h('span', { class: 'badge' }, label));
 }
 
+// Playlists made by the Schedule page for directly picked media are hidden.
+const listPlaylists = () => api('GET', '/api/playlists').then((list) => list.filter((p) => !p.hidden));
+
 // ---------- auth ----------
 function showLogin() {
   clearInterval(refreshTimer);
@@ -104,6 +107,8 @@ document.getElementById('logout').addEventListener('click', async () => {
 const routes = [
   [/^#\/screens$/, screensView],
   [/^#\/groups$/, groupsView],
+  [/^#\/schedule$/, () => scheduleView()],
+  [/^#\/schedule\/(screen|group)\/(.+)$/, (kind, sid) => scheduleView(kind, sid)],
   [/^#\/media$/, mediaView],
   [/^#\/playlists$/, playlistsView],
   [/^#\/playlists\/(.+)$/, playlistEditor],
@@ -152,7 +157,7 @@ function screenshotThumb(s) {
 
 async function screensView() {
   const [screens, playlists, groups, pairings] = await Promise.all([
-    api('GET', '/api/screens'), api('GET', '/api/playlists'), api('GET', '/api/groups'), api('GET', '/api/pairings'),
+    api('GET', '/api/screens'), listPlaylists(), api('GET', '/api/groups'), api('GET', '/api/pairings'),
   ]);
   const plName = (pid) => playlists.find((p) => p.id === pid)?.name || '—';
   const groupNames = (s) => s.groupIds.map((id) => groups.find((g) => g.id === id)?.name).filter(Boolean);
@@ -290,49 +295,6 @@ async function preview(s) {
       h('button', { class: 'primary', onclick: () => window.open(links.url, `preview-${s.id}`, 'width=960,height=540') }, 'Open here')));
 }
 
-function scheduleTable(rules, playlists, activeRuleId, scope = 'screen') {
-  const tbody = h('tbody');
-  const row = (r) => {
-    const tr = h('tr', { class: r.id && r.id === activeRuleId ? 'active-rule' : '' });
-    const days = h('div', { class: 'days' }, DAYS.map((d, i) => h('label', {}, d[0], h('input', {
-      type: 'checkbox', checked: !r.days?.length || r.days.includes(i), onchange: (e) => {
-        const set = new Set(r.days?.length ? r.days : [0, 1, 2, 3, 4, 5, 6]);
-        e.target.checked ? set.add(i) : set.delete(i);
-        r.days = [...set].sort();
-      },
-    }))));
-    tr.append(
-      h('td', {}, h('input', { type: 'checkbox', checked: r.enabled !== false, title: 'Enabled', onchange: (e) => { r.enabled = e.target.checked; } })),
-      h('td', {}, h('select', { onchange: (e) => { r.playlistId = e.target.value; } },
-        playlists.map((p) => h('option', { value: p.id, selected: p.id === r.playlistId }, p.name)))),
-      h('td', {}, days),
-      h('td', {}, h('input', { type: 'time', value: r.start || '00:00', onchange: (e) => { r.start = e.target.value; } })),
-      h('td', {}, h('input', { type: 'time', value: r.end || '00:00', onchange: (e) => { r.end = e.target.value; } })),
-      h('td', {}, h('input', { type: 'date', value: r.startDate || '', onchange: (e) => { r.startDate = e.target.value || null; } })),
-      h('td', {}, h('input', { type: 'date', value: r.endDate || '', onchange: (e) => { r.endDate = e.target.value || null; } })),
-      h('td', {}, h('input', { type: 'number', value: r.priority || 0, onchange: (e) => { r.priority = Number(e.target.value); } })),
-      h('td', {}, h('button', { class: 'small danger', type: 'button', onclick: () => { rules.splice(rules.indexOf(r), 1); tr.remove(); } }, '✕')));
-    return tr;
-  };
-  rules.forEach((r) => tbody.append(row(r)));
-  const add = h('button', {
-    type: 'button', class: 'small', disabled: !playlists.length,
-    onclick: () => {
-      const r = { playlistId: playlists[0].id, days: [1, 2, 3, 4, 5], start: '08:00', end: '18:00', priority: 0, enabled: true };
-      rules.push(r);
-      tbody.append(row(r));
-    },
-  }, '+ Add rule');
-  return h('div', {},
-    h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['On', 'Playlist', 'Days', 'From', 'To', 'Start date', 'End date', 'Priority', ''].map((t) => h('th', {}, t)))),
-      tbody)),
-    h('p', { class: 'hint' }, scope === 'group'
-      ? 'Applies to every screen in the group, in each screen’s own time zone. A screen’s own rules win ties; otherwise the highest priority wins.'
-      : 'Times use the screen’s time zone. “To” earlier than “From” runs overnight; equal times mean all day. Highest priority wins, including rules from the screen’s groups; otherwise the default playlist plays.'),
-    add);
-}
-
 function memberChecklist(items, selected, labelOf) {
   return h('div', { class: 'checklist' }, items.length ? items.map((it) => h('label', { class: 'inline' },
     h('input', { type: 'checkbox', checked: selected.has(it.id), onchange: (e) => (e.target.checked ? selected.add(it.id) : selected.delete(it.id)) }),
@@ -369,7 +331,8 @@ function screenEditor(s, playlists, groups) {
 
   const save = guard(async () => {
     if (!draft.name.trim()) return toast('Name is required');
-    const body = { ...draft, groupIds: [...groupSet] };
+    const { schedule, ...rest } = draft;
+    const body = { ...rest, groupIds: [...groupSet] };
     if (isNew) await api('POST', '/api/screens', body);
     else await api('PUT', `/api/screens/${s.id}`, body);
     closeModal();
@@ -403,7 +366,8 @@ function screenEditor(s, playlists, groups) {
         .map(([v, t]) => h('option', { value: v, selected: draft.offline.mode === v }, t)))),
     customOffline,
     h('h2', {}, 'Schedule'),
-    scheduleTable(draft.schedule, playlists, s?.activeRuleId),
+    h('p', { class: 'hint' }, 'What plays when is set in the ', h('a', { href: isNew ? '#/schedule' : `#/schedule/screen/${s.id}`, onclick: closeModal }, 'Schedule'),
+      ' section. Outside scheduled times this screen plays its default playlist.'),
     h('div', { class: 'modal-actions' }, ...danger, h('span', { class: 'spacer' }),
       h('button', { onclick: closeModal }, 'Cancel'),
       h('button', { class: 'primary', onclick: save }, isNew ? 'Add screen' : 'Save')));
@@ -515,7 +479,7 @@ function offlineFields(draft) {
 
 // ---------- groups ----------
 async function groupsView() {
-  const [groups, screens, playlists] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/screens'), api('GET', '/api/playlists')]);
+  const [groups, screens, playlists] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/screens'), listPlaylists()]);
   const members = (g) => screens.filter((s) => s.groupIds.includes(g.id));
   const groupCommand = guard(async (g, cmd) => {
     const { delivered } = await api('POST', `/api/groups/${g.id}/command`, { command: cmd });
@@ -548,7 +512,7 @@ function groupEditor(g, screens, playlists) {
   const selected = new Set(isNew ? [] : screens.filter((s) => s.groupIds.includes(g.id)).map((s) => s.id));
   const save = guard(async () => {
     if (!draft.name.trim()) return toast('Name is required');
-    const body = { name: draft.name, defaultPlaylistId: draft.defaultPlaylistId || null, schedule: draft.schedule, screenIds: [...selected] };
+    const body = { name: draft.name, defaultPlaylistId: draft.defaultPlaylistId || null, screenIds: [...selected] };
     if (isNew) await api('POST', '/api/groups', body); else await api('PUT', `/api/groups/${g.id}`, body);
     closeModal();
     toast('Saved — screens in the group update live');
@@ -570,7 +534,7 @@ function groupEditor(g, screens, playlists) {
     h('h2', {}, 'Screens'),
     memberChecklist(screens, selected, (s) => s.name),
     h('h2', {}, 'Schedule'),
-    scheduleTable(draft.schedule, playlists, null, 'group'),
+    h('p', { class: 'hint' }, 'Schedule content for this group in the ', h('a', { href: isNew ? '#/schedule' : `#/schedule/group/${g.id}`, onclick: closeModal }, 'Schedule'), ' section.'),
     h('div', { class: 'modal-actions' },
       isNew ? '' : h('button', { class: 'danger', onclick: remove }, 'Delete'),
       h('span', { class: 'spacer' }),
@@ -635,8 +599,16 @@ async function uploadFiles(files) {
 
 // ---------- playlists ----------
 async function playlistsView() {
-  const [playlists, screens] = await Promise.all([api('GET', '/api/playlists'), api('GET', '/api/screens')]);
-  const usedBy = (p) => screens.filter((s) => s.defaultPlaylistId === p.id || s.schedule.some((r) => r.playlistId === p.id)).map((s) => s.name);
+  const [playlists, screens, groups, schedules] = await Promise.all([listPlaylists(), api('GET', '/api/screens'), api('GET', '/api/groups'), api('GET', '/api/schedules')]);
+  const usedBy = (p) => {
+    const names = new Set(screens.filter((s) => s.defaultPlaylistId === p.id).map((s) => s.name));
+    for (const g of groups) if (g.defaultPlaylistId === p.id) names.add(g.name);
+    for (const e of schedules.filter((x) => x.playlistId === p.id)) {
+      for (const sid of e.targets.screenIds) names.add(screens.find((x) => x.id === sid)?.name);
+      for (const gid of e.targets.groupIds) names.add(groups.find((x) => x.id === gid)?.name);
+    }
+    return [...names].filter(Boolean);
+  };
   const create = guard(async () => {
     const name = prompt('Playlist name');
     if (!name) return;
@@ -715,6 +687,240 @@ async function playlistEditor(pid) {
       h('div', { class: 'table-wrap' }, h('table', {},
         h('thead', {}, h('tr', {}, ['#', '', 'Media', 'Seconds', '', ''].map((t) => h('th', {}, t)))), tbody)),
       h('div', { class: 'toolbar', style: 'margin-top:12px' }, h('button', { onclick: picker }, '+ Add media'))));
+}
+
+// ---------- schedule ----------
+const SCHEDULE_COLORS = ['#2f6fed', '#d97706', '#16a34a', '#9333ea', '#db2777', '#0891b2', '#65a30d', '#dc2626'];
+// One colour per playlist, assigned in order so the ones on a page differ.
+let scheduleColors = new Map();
+function colorFor(id) {
+  if (!scheduleColors.has(id)) scheduleColors.set(id, SCHEDULE_COLORS[scheduleColors.size % SCHEDULE_COLORS.length]);
+  return scheduleColors.get(id);
+}
+
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Mon … Sun
+function whenText(e) {
+  const days = e.days?.length && e.days.length < 7
+    ? (e.days.join() === '1,2,3,4,5' ? 'Weekdays' : e.days.join() === '0,6' ? 'Weekends' : DAY_ORDER.filter((d) => e.days.includes(d)).map((d) => DAYS[d]).join(', '))
+    : 'Every day';
+  const time = e.start === e.end ? 'all day' : `${e.start}–${e.end}`;
+  const fmt = (d) => new Date(`${d}T00:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  const dates = e.startDate || e.endDate ? ` · ${e.startDate ? fmt(e.startDate) : '…'} – ${e.endDate ? fmt(e.endDate) : '…'}` : '';
+  return `${days}, ${time}${dates}`;
+}
+
+async function scheduleView(kind, targetId) {
+  const [entries, screens, groups, playlists, media] = await Promise.all([
+    api('GET', '/api/schedules'), api('GET', '/api/screens'), api('GET', '/api/groups'), listPlaylists(), api('GET', '/api/media'),
+  ]);
+  const ctx = { screens, groups, playlists, media };
+  scheduleColors = new Map();
+  for (const pid of [...new Set([...entries.map((e) => e.playlistId), ...playlists.map((pl) => pl.id)])]) colorFor(pid);
+  if (!kind) {
+    if (screens[0]) { kind = 'screen'; targetId = screens[0].id; } else if (groups[0]) { kind = 'group'; targetId = groups[0].id; }
+  }
+  const target = kind === 'screen' ? screens.find((x) => x.id === targetId) : groups.find((x) => x.id === targetId);
+  const affects = (e) => target && (kind === 'screen'
+    ? e.targets.screenIds.includes(target.id) || e.targets.groupIds.some((gid) => target.groupIds.includes(gid))
+    : e.targets.groupIds.includes(target.id));
+  const nameOf = (list, xid) => list.find((x) => x.id === xid)?.name;
+
+  const picker = h('select', { onchange: (e) => { location.hash = `#/schedule/${e.target.value}`; } },
+    screens.length ? h('optgroup', { label: 'Screens' }, screens.map((x) => h('option', { value: `screen/${x.id}`, selected: kind === 'screen' && x.id === targetId }, x.name))) : '',
+    groups.length ? h('optgroup', { label: 'Groups' }, groups.map((x) => h('option', { value: `group/${x.id}`, selected: kind === 'group' && x.id === targetId }, x.name))) : '');
+
+  const defaultSelect = target && h('select', { onchange: guard(async (e) => {
+    await api('PUT', `/api/${kind === 'screen' ? 'screens' : 'groups'}/${target.id}`, { defaultPlaylistId: e.target.value || null });
+    toast('Saved');
+    scheduleView(kind, targetId);
+  }) }, h('option', { value: '' }, kind === 'screen' ? '— none (use its group’s) —' : '— none —'),
+  playlists.map((pl) => h('option', { value: pl.id, selected: pl.id === target.defaultPlaylistId }, pl.name)));
+
+  const weekSlot = h('div', { class: 'week-slot' }, h('p', { class: 'muted' }, 'Loading…'));
+  const row = (e) => h('tr', { class: affects(e) ? 'affects' : '' },
+    h('td', {}, h('input', { type: 'checkbox', checked: e.enabled !== false, title: 'On / off', onchange: guard(async (ev) => {
+      await api('PUT', `/api/schedules/${e.id}`, { enabled: ev.target.checked });
+      scheduleView(kind, targetId);
+    }) })),
+    h('td', {}, h('span', { class: 'swatch', style: `background:${colorFor(e.playlistId)}` }), h('strong', {}, e.name),
+      h('div', { class: 'hint' }, e.content.type === 'media' ? `${e.content.items.length} media item${e.content.items.length === 1 ? '' : 's'}` : `Playlist: ${e.content.name || '—'}`)),
+    h('td', {}, h('div', { class: 'chips' },
+      e.targets.groupIds.map((gid) => h('span', { class: 'badge-inline' }, '👥 ', nameOf(groups, gid) || '?')),
+      e.targets.screenIds.map((sid) => h('span', { class: 'badge-inline' }, nameOf(screens, sid) || '?')),
+      !e.targets.groupIds.length && !e.targets.screenIds.length ? h('span', { class: 'status-error' }, 'No screens') : '')),
+    h('td', {}, whenText(e)),
+    h('td', {}, e.priority || 0),
+    h('td', {}, h('div', { class: 'actions' },
+      h('button', { class: 'small', onclick: () => entryEditor(e, ctx, () => scheduleView(kind, targetId)) }, 'Edit'),
+      h('button', { class: 'small danger', onclick: guard(async () => {
+        if (!confirm(`Remove “${e.name}” from the schedule?`)) return;
+        await api('DELETE', `/api/schedules/${e.id}`);
+        scheduleView(kind, targetId);
+      }) }, '✕'))));
+
+  const sorted = [...entries].sort((a, b) => Number(affects(b)) - Number(affects(a)));
+  view.replaceChildren(
+    h('div', { class: 'toolbar' },
+      h('h1', {}, 'Schedule'),
+      h('button', { class: 'primary', disabled: !screens.length && !groups.length, onclick: () => entryEditor(null, ctx, () => scheduleView(kind, targetId), { kind, id: targetId }) }, '+ Schedule content')),
+    !screens.length && !groups.length
+      ? h('div', { class: 'card empty' }, 'Add a screen first, then schedule content to it here.')
+      : h('div', { class: 'card week-card' },
+        h('div', { class: 'week-head' },
+          h('label', { class: 'inline' }, 'Week view for ', picker),
+          defaultSelect && h('label', { class: 'inline' }, 'When nothing is scheduled: ', defaultSelect)),
+        weekSlot),
+    h('h2', {}, 'Scheduled content'),
+    entries.length
+      ? h('div', { class: 'card table-wrap' }, h('table', { class: 'schedule-table' },
+        h('thead', {}, h('tr', {}, ['On', 'Content', 'Screens & groups', 'When', 'Priority', ''].map((t) => h('th', {}, t)))),
+        h('tbody', {}, sorted.map(row))))
+      : h('div', { class: 'card empty' }, 'Nothing scheduled yet. Click “+ Schedule content” to choose screens, content and times.'));
+
+  if (target) {
+    const week = await api('GET', `/api/schedule/week?${kind}Id=${encodeURIComponent(target.id)}`);
+    weekSlot.replaceChildren(weekGrid(week));
+  }
+}
+
+function weekGrid(week) {
+  const tz = week.timezone;
+  const dayFmt = new Intl.DateTimeFormat([], { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short' });
+  const timeFmt = new Intl.DateTimeFormat([], { timeZone: tz, hour: '2-digit', minute: '2-digit' });
+  const days = week.dayStarts.slice(0, 7).map((start, i) => {
+    const end = week.dayStarts[i + 1];
+    const col = h('div', { class: 'week-day' });
+    for (const b of week.blocks) {
+      const from = Math.max(b.from, start);
+      const to = Math.min(b.to, end);
+      if (to <= from) continue;
+      const top = ((from - start) / (end - start)) * 100;
+      const height = ((to - from) / (end - start)) * 100;
+      const label = b.playlistName || 'Nothing scheduled';
+      const range = `${timeFmt.format(b.from)}–${timeFmt.format(b.to)}`;
+      col.append(h('div', {
+        class: `week-block ${b.scheduleId ? '' : 'is-default'} ${b.playlistId ? '' : 'is-empty'}`,
+        style: `top:${top}%;height:${height}%;--c:${b.playlistId ? colorFor(b.playlistId) : '#8a93a3'}`,
+        title: `${label}\n${range}\n${b.scheduleName ? `Scheduled: ${b.scheduleName}` : 'Default playlist (nothing scheduled)'}`,
+      }, height > 3.5 ? h('span', {}, label, height > 7 ? h('small', {}, range) : '') : ''));
+    }
+    if (week.now >= start && week.now < end) col.append(h('div', { class: 'week-now', style: `top:${((week.now - start) / (end - start)) * 100}%` }));
+    return h('div', { class: 'week-col' }, h('div', { class: 'week-label' }, i === 0 ? 'Today' : dayFmt.format(start)), col);
+  });
+  const hours = h('div', { class: 'week-hours' }, [0, 3, 6, 9, 12, 15, 18, 21].map((hr) => h('span', { style: `top:${(hr / 24) * 100}%` }, `${String(hr).padStart(2, '0')}:00`)));
+  return h('div', {},
+    h('div', { class: 'week-grid' }, h('div', { class: 'week-col week-col-hours' }, h('div', { class: 'week-label' }, ''), hours), ...days),
+    h('p', { class: 'hint' }, `Times in ${tz}. Solid blocks are scheduled content; pale blocks are the default playlist. Hover a block for details.`));
+}
+
+function entryEditor(entry, { screens, groups, playlists, media }, done, preselect) {
+  const isNew = !entry;
+  const draft = entry ? structuredClone(entry) : {
+    name: '', targets: { screenIds: preselect?.kind === 'screen' ? [preselect.id] : [], groupIds: preselect?.kind === 'group' ? [preselect.id] : [] },
+    content: { type: playlists.length ? 'playlist' : 'media', playlistId: playlists[0]?.id, items: [], seconds: 10 },
+    days: [], start: '00:00', end: '00:00', startDate: null, endDate: null, priority: 0, enabled: true,
+  };
+  if (draft.content.type === 'media') draft.content.items ||= [];
+  draft.content.seconds ||= 10;
+  const screenSet = new Set(draft.targets.screenIds);
+  const groupSet = new Set(draft.targets.groupIds);
+  let always = draft.start === draft.end && !draft.days?.length && !draft.startDate && !draft.endDate;
+  const ready = media.filter((m) => m.status === 'ready');
+
+  // What
+  const playlistPane = h('div', {}, playlists.length
+    ? h('select', { onchange: (e) => { draft.content.playlistId = e.target.value; } },
+      playlists.map((pl) => h('option', { value: pl.id, selected: pl.id === draft.content.playlistId }, pl.name)))
+    : h('p', { class: 'muted' }, 'No playlists yet: choose media instead, or create one under Playlists.'));
+  const order = h('p', { class: 'hint' });
+  const mediaGrid = h('div', { class: 'picker' });
+  const renderMedia = () => {
+    mediaGrid.replaceChildren(...[...ready].reverse().map((m) => {
+      const n = draft.content.items.findIndex((it) => it.mediaId === m.id);
+      return h('button', { type: 'button', class: n >= 0 ? 'picked' : '', onclick: () => {
+        if (n >= 0) draft.content.items.splice(n, 1); else draft.content.items.push({ mediaId: m.id, duration: 0, muted: true });
+        renderMedia();
+      } }, thumb(m), h('span', {}, n >= 0 ? `${n + 1}. ` : '', m.name));
+    }));
+    order.textContent = draft.content.items.length ? `${draft.content.items.length} selected; they play in the order you picked them.` : 'Click media to add it, in the order it should play.';
+  };
+  renderMedia();
+  const mediaPane = h('div', {},
+    ready.length ? mediaGrid : h('p', { class: 'muted' }, 'No media yet: upload some under Media first.'), order,
+    h('label', { class: 'inline' }, 'Seconds per image or slide ', h('input', { type: 'number', min: 1, value: draft.content.seconds, style: 'width:80px', oninput: (e) => { draft.content.seconds = Number(e.target.value) || 10; } })));
+  const showWhat = () => { playlistPane.hidden = draft.content.type !== 'playlist'; mediaPane.hidden = draft.content.type !== 'media'; };
+  showWhat();
+
+  // When
+  const dayBoxes = h('div', { class: 'day-toggles' });
+  const renderDays = () => dayBoxes.replaceChildren(...DAY_ORDER.map((d) => {
+    const on = !draft.days.length || draft.days.includes(d);
+    return h('button', { type: 'button', class: on ? 'on' : '', onclick: () => {
+      const set = new Set(draft.days.length ? draft.days : [0, 1, 2, 3, 4, 5, 6]);
+      set.has(d) ? set.delete(d) : set.add(d);
+      draft.days = set.size === 7 ? [] : [...set].sort();
+      renderDays();
+    } }, DAYS[d]);
+  }), h('span', { class: 'quick' },
+    h('button', { type: 'button', class: 'small ghost', onclick: () => { draft.days = []; renderDays(); } }, 'Every day'),
+    h('button', { type: 'button', class: 'small ghost', onclick: () => { draft.days = [1, 2, 3, 4, 5]; renderDays(); } }, 'Weekdays'),
+    h('button', { type: 'button', class: 'small ghost', onclick: () => { draft.days = [0, 6]; renderDays(); } }, 'Weekends')));
+  renderDays();
+  const hasDates = h('input', { type: 'checkbox', checked: Boolean(draft.startDate || draft.endDate), onchange: (e) => { datesRow.hidden = !e.target.checked; if (!e.target.checked) { draft.startDate = null; draft.endDate = null; } } });
+  const datesRow = h('div', { class: 'form-grid', hidden: !(draft.startDate || draft.endDate) },
+    h('label', {}, 'From date', h('input', { type: 'date', value: draft.startDate || '', onchange: (e) => { draft.startDate = e.target.value || null; } })),
+    h('label', {}, 'To date', h('input', { type: 'date', value: draft.endDate || '', onchange: (e) => { draft.endDate = e.target.value || null; } })));
+  const timesPane = h('div', { class: 'when-pane' },
+    h('div', {}, h('div', { class: 'field-label' }, 'Days'), dayBoxes),
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'From', h('input', { type: 'time', value: draft.start === draft.end ? '09:00' : draft.start, onchange: (e) => { draft.start = e.target.value; } })),
+      h('label', {}, 'To', h('input', { type: 'time', value: draft.start === draft.end ? '17:00' : draft.end, onchange: (e) => { draft.end = e.target.value; } }),
+        h('span', { class: 'hint' }, 'Earlier than “From” runs overnight.'))),
+    h('label', { class: 'inline' }, hasDates, 'Only between certain dates'),
+    datesRow);
+  const showWhen = () => { timesPane.hidden = always; };
+  showWhen();
+
+  const radio = (name, checked, label, onchange) => h('label', { class: 'inline' }, h('input', { type: 'radio', name, checked, onchange }), label);
+  const save = guard(async () => {
+    const targets = { screenIds: [...screenSet], groupIds: [...groupSet] };
+    if (!targets.screenIds.length && !targets.groupIds.length) return toast('Choose at least one screen or group');
+    let timing;
+    if (always) timing = { days: [], start: '00:00', end: '00:00', startDate: null, endDate: null };
+    else {
+      if (draft.start === draft.end) { draft.start = timesPane.querySelectorAll('input[type=time]')[0].value; draft.end = timesPane.querySelectorAll('input[type=time]')[1].value; }
+      timing = { days: draft.days, start: draft.start, end: draft.end, startDate: draft.startDate, endDate: draft.endDate };
+    }
+    const body = { name: draft.name, targets, content: draft.content, priority: draft.priority, enabled: draft.enabled, ...timing };
+    if (isNew) await api('POST', '/api/schedules', body); else await api('PUT', `/api/schedules/${entry.id}`, body);
+    closeModal();
+    toast('Scheduled — screens update now');
+    done();
+  });
+
+  openModal(
+    h('h1', {}, isNew ? 'Schedule content' : `Edit “${entry.name}”`),
+    h('div', { class: 'step' }, h('h2', {}, '1. Where'),
+      groups.length ? [h('div', { class: 'field-label' }, 'Groups'), memberChecklist(groups, groupSet, (g) => `${g.name} (${screens.filter((x) => x.groupIds.includes(g.id)).length})`)] : '',
+      h('div', { class: 'field-label' }, 'Screens'), memberChecklist(screens, screenSet, (x) => x.name)),
+    h('div', { class: 'step' }, h('h2', {}, '2. What'),
+      h('div', { class: 'segmented' },
+        radio('what', draft.content.type === 'playlist', 'A playlist', () => { draft.content.type = 'playlist'; draft.content.playlistId ||= playlists[0]?.id; showWhat(); }),
+        radio('what', draft.content.type === 'media', 'Choose media', () => { draft.content.type = 'media'; showWhat(); })),
+      playlistPane, mediaPane),
+    h('div', { class: 'step' }, h('h2', {}, '3. When'),
+      h('div', { class: 'segmented' },
+        radio('when', always, 'Always', () => { always = true; showWhen(); }),
+        radio('when', !always, 'At set times', () => { always = false; showWhen(); })),
+      timesPane),
+    h('details', {}, h('summary', {}, 'Name and priority'),
+      h('div', { class: 'form-grid' },
+        h('label', {}, 'Name', h('input', { value: draft.name, placeholder: 'e.g. Lunch menu', oninput: (e) => { draft.name = e.target.value; } })),
+        h('label', {}, 'Priority', h('input', { type: 'number', value: draft.priority || 0, oninput: (e) => { draft.priority = Number(e.target.value) || 0; } }),
+          h('span', { class: 'hint' }, 'When two schedules overlap, the higher number wins.')))),
+    h('div', { class: 'modal-actions' },
+      h('button', { onclick: closeModal }, 'Cancel'),
+      h('button', { class: 'primary', onclick: save }, isNew ? 'Schedule' : 'Save')));
 }
 
 // ---------- settings ----------

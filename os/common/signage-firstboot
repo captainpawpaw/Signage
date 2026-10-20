@@ -54,11 +54,13 @@ grow_root() {
 internal_disks() {
   local root
   root=$(root_disk)
-  lsblk -dnpo NAME,TYPE,TRAN,RM,SIZE -b | while read -r name type tran rm size; do
-    [ "$type" = disk ] || continue
+  local name
+  for name in $(lsblk -dnpo NAME); do
+    [ "$(lsblk -dno TYPE "$name")" = disk ] || continue
     [ "$name" = "$root" ] && continue
-    [ "$tran" = usb ] || [ "$rm" = 1 ] && continue
-    [ "$size" -ge 8000000000 ] || continue
+    [ "$(lsblk -dno TRAN "$name")" = usb ] && continue
+    [ "$(lsblk -dno RM "$name" | tr -d ' ')" = 1 ] && continue
+    [ "$(lsblk -dbno SIZE "$name" | tr -d ' ')" -ge 8000000000 ] || continue
     echo "$name"
   done
 }
@@ -72,8 +74,8 @@ offer_install() {
   [ -e "$STATE/install-declined" ] && return
   local root tran rm disks n i key target
   root=$(root_disk)
-  tran=$(lsblk -dno TRAN "$root")
-  rm=$(lsblk -dno RM "$root")
+  tran=$(lsblk -dno TRAN "$root" | tr -d ' ')
+  rm=$(lsblk -dno RM "$root" | tr -d ' ')
   [ "$tran" = usb ] || [ "$rm" = 1 ] || return
   mapfile -t disks < <(internal_disks)
   n=${#disks[@]}

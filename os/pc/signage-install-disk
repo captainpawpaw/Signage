@@ -16,7 +16,8 @@ set -euo pipefail
 export MTOOLS_SKIP_CHECK=1
 
 DISK=$1
-SOURCE=${2%/}
+SOURCE=$2
+[ "$SOURCE" = / ] || SOURCE=${SOURCE%/}
 ROOT_SIZE=${3:-0}
 MNT=$(mktemp -d)
 

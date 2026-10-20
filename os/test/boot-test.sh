@@ -43,6 +43,7 @@ api() { curl -fsS -b "$JAR" -c "$JAR" -H 'content-type: application/json' "$@"; 
 elapsed() { echo $(( $(date +%s) - START )); }
 
 echo "== Signage server on port $PORT"
+if curl -fs "$BASE/api/hello" >/dev/null; then echo "Port $PORT is already in use (set SIGNAGE_TEST_PORT)"; exit 1; fi
 PORT=$PORT HOST=0.0.0.0 DATA_DIR="$WORK/data" ADMIN_PASSWORD=boot-test MDNS=off \
   PUBLIC_URL="http://10.0.2.2:$PORT" node "$REPO/server/index.js" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!

@@ -77,7 +77,7 @@ umount "$MNT"
 echo "== Boot partition"
 CMDLINE=$(mktemp)
 mtype -i "${LOOP}p1" ::cmdline.txt | tr -d '\r\n' > "$CMDLINE"
-grep -q consoleblank=0 "$CMDLINE" || sed -i '1 s/$/ consoleblank=0/' "$CMDLINE"
+grep -q consoleblank=0 "$CMDLINE" || sed -i '1 s/$/ consoleblank=0 fbcon=font:TER16x32/' "$CMDLINE"
 echo >> "$CMDLINE"
 mcopy -o -i "${LOOP}p1" "$CMDLINE" ::cmdline.txt
 mcopy -o -i "${LOOP}p1" "$HERE/../common/README.txt" "$HERE/../common/wifi.txt" ::

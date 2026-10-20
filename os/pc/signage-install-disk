@@ -82,7 +82,7 @@ insmod part_gpt
 insmod ext2
 search --no-floppy --fs-uuid --set=root $ROOT_UUID
 menuentry "Signage OS" {
-  linux /vmlinuz root=UUID=$ROOT_UUID ro quiet loglevel=3 consoleblank=0 console=ttyS0,115200 console=tty1
+  linux /vmlinuz root=UUID=$ROOT_UUID ro quiet loglevel=3 consoleblank=0 fbcon=font:TER16x32 console=ttyS0,115200 console=tty1
   initrd /initrd.img
 }
 menuentry "Signage OS (troubleshooting)" {

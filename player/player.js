@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.2.0';
+  const PLAYER_VERSION = '2.3.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -38,6 +38,9 @@
 
   const cfg = self.SIGNAGE_CONFIG?.signKey ? self.SIGNAGE_CONFIG : null;
   const MODE = cfg ? 'device' : 'preview';
+  // Served by the Linux player agent: same protocol as previews, but content
+  // is on the local disk and "connected" means the agent can reach the server.
+  const LOCAL = Boolean(self.SIGNAGE_LOCAL);
   const params = new URLSearchParams(location.hash.slice(1) || location.search.slice(1));
   const previewToken = params.get('token');
   let serverUrl = MODE === 'preview' ? (params.get('server') || location.origin).replace(/\/+$/, '') : null;
@@ -176,7 +179,12 @@
   async function prepare(item) {
     const key = assetKey(item);
     if (assets.has(key)) return;
-    if (!item.enc) {
+    if (!item.enc && LOCAL) {
+      // Everything is already on this device's disk: play it from there.
+      const url = `${serverUrl}${item.url}?pt=${encodeURIComponent(previewToken)}`;
+      if (item.type === 'image') await preloadImage(url);
+      assets.set(key, url);
+    } else if (!item.enc) {
       const url = `${serverUrl}${item.url}?pt=${encodeURIComponent(previewToken)}`;
       // Keep a copy in memory so the playlist keeps looping if the connection
       // drops. Videos over the budget stream instead (and are skipped offline).
@@ -542,11 +550,12 @@
 
   async function dispatch(msg) {
     if (msg.type === 'pairing') {
-      setConnected(true);
+      if (!LOCAL) setConnected(true);
       await forgetContent();
+      const fingerprint = msg.fingerprint || cfg?.fingerprint;
       showIdle('Pair this screen', {
-        title: cfg.serverName || 'Signage', code: msg.code,
-        hint: `In the Signage console: Screens → Pair a screen, then enter this code.   Server key ${cfg.fingerprint}`,
+        title: msg.serverName || cfg?.serverName || 'Signage', code: msg.code,
+        hint: `In the Signage console: Screens → Pair a screen, then enter this code.${fingerprint ? `   Server key ${fingerprint}` : ''}`,
       });
       $('#idle .idle-msg').textContent = 'Waiting to be paired';
     } else if (msg.type === 'welcome') {
@@ -555,8 +564,10 @@
       store.set(SERVER_KEY, serverUrl);
       if (Array.isArray(msg.addresses)) store.set(ADDR_KEY, msg.addresses);
       setConnected(true);
+    } else if (msg.type === 'connection') {
+      setConnected(Boolean(msg.online));
     } else if (msg.type === 'manifest') {
-      setConnected(true);
+      if (!LOCAL) setConnected(true);
       if (reloadForNewPlayer(msg.playerVersion)) return;
       applyManifest(msg.manifest);
     } else if (msg.type === 'command') {
@@ -580,7 +591,7 @@
   // HTTP fallback for networks/proxies that break WebSockets (previews only;
   // devices need the signed socket).
   async function poll() {
-    if (MODE !== 'preview' || conn?.ws.readyState === WebSocket.OPEN || !previewToken) return;
+    if (MODE !== 'preview' || LOCAL || conn?.ws.readyState === WebSocket.OPEN || !previewToken) return;
     try {
       const res = await fetch(`${serverUrl}/api/player/manifest`, { headers: { Authorization: `Bearer ${previewToken}` }, cache: 'no-store' });
       if (!res.ok) return setConnected(false);

@@ -176,7 +176,11 @@ async function screensView() {
         h('dt', {}, 'Progress'), h('dd', {}, showing),
         h('dt', {}, 'Display'), h('dd', {}, st.display ? `${st.display.width}×${st.display.height} · ${s.settings.orientation}${st.lowPower ? ' · low-power' : ''}` : s.settings.orientation),
         h('dt', {}, 'Address'), h('dd', {}, st.ip || '—'),
-        st.addonVersion && st.addonVersion !== info.addonVersion
+        st.agent ? [h('dt', {}, 'Player'), h('dd', { title: `Signage agent ${st.agent.version}` },
+          `${st.agent.model || 'Linux player'} · cache ${bytes(st.agent.cacheBytes || 0)}${st.agent.freeBytes != null ? `, ${bytes(st.agent.freeBytes)} free` : ''}${st.agent.diskFull ? ' · disk full' : ''}`)] : null,
+        st.agent && st.agent.version !== info.agentVersion
+          ? [h('dt', {}, 'Agent'), h('dd', { class: 'status-processing' }, `v${st.agent.version} – update to v${info.agentVersion} pending`)] : null,
+        !st.agent && st.addonVersion && st.addonVersion !== info.addonVersion
           ? [h('dt', {}, 'Add-on'), h('dd', { class: 'status-processing' }, `v${st.addonVersion} – update to v${info.addonVersion} pending`)] : null),
       h('div', { class: 'actions' },
         h('button', { class: 'small', onclick: () => screenEditor(s, playlists, groups) }, 'Edit'),
@@ -449,6 +453,7 @@ function addonDialog() {
     h('p', {}, 'One add-on works for every screen. It finds this server on the network by itself (as ', h('code', {}, 'signage.local'), ', by PC name or by address), then shows a pairing code for you to approve under ', h('strong', {}, 'Pair a screen'), '.'),
     h('div', { class: 'downloads' },
       dl('/addon/screen-setup.zip', 'Windows screen PC installer', 'Add-on, fullscreen start at login and automatic updates. Unzip on the screen PC and run setup-screen.bat.'),
+      dl('/addon/signage-linux-setup.sh', 'Raspberry Pi / Linux player', 'One file for Raspberry Pi OS (Bookworm or newer) or Debian. Copy it to the device and run: sudo bash signage-linux-setup.sh. Keeps all scheduled content on disk and updates itself.'),
       dl('/addon/signage-chrome.zip', 'Chrome / Edge add-on', 'Unzip, open chrome://extensions, turn on Developer mode, click Load unpacked.'),
       dl('/addon/signage-firefox.zip', 'Firefox add-on (testing)', 'about:debugging → This Firefox → Load Temporary Add-on → pick manifest.json. Needs signing by Mozilla for permanent use.')),
     h('label', {}, 'Or open this page on the screen PC to download there', h('div', { class: 'input-row' }, pageInput, copyButton(pageInput))),
@@ -469,8 +474,9 @@ function extensionDialog(s) {
   openModal(
     h('h1', {}, `Pre-configured add-on for ${s.name}`),
     h('p', {}, 'This add-on pairs itself with ', h('strong', {}, s.name), ' the first time it starts, so no code is needed. Use it when you are setting up this one screen; otherwise use the universal add-on (Install add-on) and pair it.'),
-    h('label', {}, 'Browser', h('select', { onchange: (e) => { browser = e.target.value; } },
-      h('option', { value: 'chrome' }, 'Chrome / Edge'), h('option', { value: 'firefox' }, 'Firefox (testing)'))),
+    h('label', {}, 'Player', h('select', { onchange: (e) => { browser = e.target.value; } },
+      h('option', { value: 'chrome' }, 'Chrome / Edge add-on'), h('option', { value: 'linux' }, 'Raspberry Pi / Linux player'), h('option', { value: 'firefox' }, 'Firefox add-on (testing)'))),
+    h('p', { class: 'hint' }, 'Raspberry Pi / Linux: copy the downloaded .sh file to the device and run sudo bash on it.'),
     h('div', { class: 'callout' },
       h('strong', {}, 'Install on the screen PC:'),
       h('ol', {},

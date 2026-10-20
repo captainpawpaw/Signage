@@ -20,6 +20,10 @@ fullscreen.
 
 ## Features
 
+- **Raspberry Pi / Linux player.** A dedicated screen client installed from a
+  single setup file. It uses the same pairing and encryption as the add-on,
+  keeps an encrypted on-disk cache of everything scheduled, starts at boot and
+  updates itself.
 - **One add-on for every screen, no IP addresses.** The add-on comes in
   Chrome/Edge and Firefox versions. It tries every way it knows to reach the
   server: `signage.local` (the server announces this name with mDNS), the
@@ -117,6 +121,39 @@ network. Its log is in `data\server.log`. To undo it, run
 4. The screen shows a 6-character code. In the console, go to **Screens →
    Pair a screen** (or use the banner that appears), enter the code and pick a
    name and playlist.
+
+**Raspberry Pi / Linux player (dedicated screens)**
+
+Use this for screens that should run unattended for months.
+- **Supported:** Raspberry Pi OS Bookworm or newer (Lite or Desktop) on a
+  Pi 4 or Pi 5, or Debian 12+ on a small PC.
+- **Download:** in the console, click **Screens → Install add-on →
+  Raspberry Pi / Linux player**. You get one file, `signage-linux-setup.sh`.
+  It is the same file for every device.
+- **Install:** copy the file to the device and run
+  `sudo bash signage-linux-setup.sh`. The device then:
+  - installs Node.js, Chromium and the `cage` kiosk compositor;
+  - becomes a dedicated screen: the desktop is switched off and the player
+    runs fullscreen on the HDMI output from boot;
+  - shows a pairing code on the screen. Approve it under **Pair a screen**,
+    as you would for the add-on. For a specific screen, the **Add-on**
+    button on its card offers a pre-configured Linux file that pairs by
+    itself.
+- **How it differs from the browser add-on:**
+  - All content in the screen's 8-day timetable is downloaded to disk. It
+    stays encrypted there and is decrypted only while it plays.
+  - The cache size is limited only by the disk. The agent keeps 1 GB free and
+    removes content nothing uses any more.
+  - New content is downloaded completely before it goes on screen.
+  - Reboots, power cuts and long server outages don't interrupt playback.
+  - The agent and the kiosk are system services that restart themselves. A
+    player page that stops responding is reloaded.
+  - The agent installs updates by itself, but only ones signed by your server.
+  - The console shows the device model and how much disk the cache uses.
+- **Status:** run `systemctl status signage-agent` or
+  `journalctl -u signage-agent -f`.
+- **Remove:** run `sudo signage-uninstall`. This restores the desktop if one
+  was switched off.
 
 **Any computer:** download the Chrome/Edge add-on from **Install add-on**,
 unzip it, then use **Load unpacked** as above.
@@ -241,10 +278,13 @@ player/          the player: runs in the add-on and in preview links
 extension/       add-on background (window management, watchdog, keep-awake, updates)
 admin/           admin console (vanilla JS, no build step)
 windows/         server auto-start and screen-PC setup/update scripts
+agent/           the Linux player agent (Raspberry Pi etc.)
+linux/           template of the Linux setup file (server/linux.js embeds the agent)
 ```
 
 After changing anything in `player/` or `extension/`, bump `ADDON_VERSION` in
-`server/extension.js`. Screens with the updater then pick up the change within
+`server/extension.js`. After changing `agent/`, bump the version in
+`agent/package.json`, so Linux players update themselves. Screens with the updater then pick up the change within
 15 minutes.
 
 ## Roadmap

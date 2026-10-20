@@ -324,6 +324,41 @@ test('screens get a timetable and every playlist it needs', async () => {
   await call('DELETE', `/api/screens/${s.id}`);
 });
 
+test('Linux player: generic setup file, pre-configured file and signed agent package', async () => {
+  const setup = await call('GET', '/addon/signage-linux-setup.sh');
+  assert.equal(setup.status, 200);
+  const script = setup.body.toString();
+  assert.match(script, /^#!\/usr\/bin\/env bash\n/);
+  const config = JSON.parse(script.split("<<'SIGNAGE_CONFIG'\n")[1].split('\nSIGNAGE_CONFIG')[0]);
+  assert.equal(config.serverId, cfg.serverId);
+  assert.equal(config.signKey, cfg.signKey);
+  assert.equal(config.enrollToken, undefined);
+
+  // The embedded package is a valid tar.gz with the agent, player and dependencies.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'signage-agent-'));
+  fs.writeFileSync(path.join(dir, 'setup.sh'), script);
+  execFileSync('bash', ['-n', path.join(dir, 'setup.sh')]);
+  execFileSync('bash', [path.join(dir, 'setup.sh')], { env: { ...process.env, SIGNAGE_ROOT: path.join(dir, 'root'), SIGNAGE_SKIP_SYSTEM: '1' } });
+  const app = path.join(dir, 'root/opt/signage/app');
+  for (const f of ['agent/agent.js', 'agent/package.json', 'player/player.js', 'node_modules/ws/package.json', 'node_modules/multicast-dns/index.js', 'node_modules/dns-packet/index.js']) {
+    assert.ok(fs.existsSync(path.join(app, f)), f);
+  }
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'root/etc/signage-agent/config.json'))), config);
+
+  // Updates are signed with the server key.
+  const pkg = await call('GET', '/agent/signage-agent.tar.gz');
+  assert.ok(crypto.verify('sha256', pkg.body, { key: ctx.keys.signKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(pkg.headers.get('x-signage-signature'), 'base64')));
+  const version = (await call('GET', '/agent/version.json')).body;
+  assert.equal(version.version, JSON.parse(fs.readFileSync(path.join(app, 'agent/package.json'))).version);
+
+  // Pre-configured for one screen: carries a one-time enrolment token.
+  const s2 = (await call('POST', '/api/screens', { name: 'Pi corridor' })).body;
+  const pre = (await call('GET', `/api/screens/${s2.id}/extension.zip?browser=linux`)).body.toString();
+  assert.ok(JSON.parse(pre.split("<<'SIGNAGE_CONFIG'\n")[1].split('\nSIGNAGE_CONFIG')[0]).enrollToken);
+  await call('DELETE', `/api/screens/${s2.id}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('short links resist guessing', async () => {
   let last;
   for (let i = 0; i < 22; i++) last = (await fetch(`${base}/p/ZZZZZ${i % 10}`, { redirect: 'manual' })).status;

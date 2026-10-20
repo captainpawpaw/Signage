@@ -1,0 +1,5 @@
+# Optional: to put this screen on Wi-Fi, fill in your network below and keep
+# this file on the SIGNAGE drive (or on the USB stick with the setup file).
+# Ethernet needs nothing.
+ssid=
+password=

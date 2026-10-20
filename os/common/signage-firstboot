@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# Signage OS first start. Runs on the screen (tty1) until this device is a
+# Signage player:
+#   1. PC: grows the system to fill the disk; when started from a USB stick,
+#      offers to install Signage OS onto the internal disk
+#   2. joins Wi-Fi if a wifi.txt is provided (Ethernet needs nothing)
+#   3. finds the setup file from the Signage console: on the SIGNAGE / boot
+#      partition, on any USB stick, or from a Signage server on this network
+#   4. installs it and starts the player, which shows a pairing code
+set -u
+
+PLATFORM=$(cat /etc/signage-os/platform 2>/dev/null || echo pc)
+STATE=/var/lib/signage-os
+SETUP="$STATE/signage-linux-setup.sh"
+BOOT_DIRS="/boot/efi /boot/firmware"
+SERVER_URLS="${SIGNAGE_SERVER_URLS:-http://signage.local:8080 http://signage.local https://signage.local}"
+mkdir -p "$STATE"
+exec 2>>"$STATE/firstboot.log"
+
+for font in /usr/share/consolefonts/Lat15-TerminusBold32x16.psf.gz /usr/share/consolefonts/Uni3-TerminusBold32x16.psf.gz; do
+  if [ -f "$font" ]; then setfont "$font" 2>/dev/null; break; fi
+done
+setterm --blank 0 --powersave off --cursor off 2>/dev/null
+
+log() { echo "$(date -Is) $*" >&2; }
+title() {
+  clear
+  printf '\n  \033[1mSignage OS\033[0m\n\n'
+}
+addresses() { hostname -I 2>/dev/null | tr ' ' '\n' | grep -v ':' | grep -v '^$' | paste -sd' '; }
+
+root_disk() {
+  local src
+  src=$(findmnt -no SOURCE /)
+  echo "/dev/$(lsblk -no PKNAME "$src" | head -1)"
+}
+
+grow_root() {
+  [ -e "$STATE/grown" ] && return
+  local src disk num
+  src=$(findmnt -no SOURCE /)
+  disk=$(root_disk)
+  num=$(cat "/sys/class/block/$(basename "$src")/partition")
+  log "growing $src on $disk"
+  sgdisk -e "$disk" >&2 && partprobe "$disk" 2>/dev/null
+  growpart "$disk" "$num" >&2
+  resize2fs "$src" >&2
+  touch "$STATE/grown"
+}
+
+# --- PC: install from the USB stick onto the internal disk -------------------
+internal_disks() {
+  local root
+  root=$(root_disk)
+  lsblk -dnpo NAME,TYPE,TRAN,RM,SIZE -b | while read -r name type tran rm size; do
+    [ "$type" = disk ] || continue
+    [ "$name" = "$root" ] && continue
+    [ "$tran" = usb ] || [ "$rm" = 1 ] && continue
+    [ "$size" -ge 8000000000 ] || continue
+    echo "$name"
+  done
+}
+
+describe_disk() {
+  lsblk -dno SIZE,MODEL "$1" | sed 's/  */ /g'
+}
+
+offer_install() {
+  [ "$PLATFORM" = pc ] || return
+  [ -e "$STATE/install-declined" ] && return
+  local root tran rm disks n i key target
+  root=$(root_disk)
+  tran=$(lsblk -dno TRAN "$root")
+  rm=$(lsblk -dno RM "$root")
+  [ "$tran" = usb ] || [ "$rm" = 1 ] || return
+  mapfile -t disks < <(internal_disks)
+  n=${#disks[@]}
+  [ "$n" -gt 0 ] || return
+
+  title
+  echo "  Signage OS is running from a USB stick."
+  echo
+  echo "  It can be installed on this computer's own disk, so the stick is"
+  echo "  not needed any more. EVERYTHING ON THAT DISK WILL BE ERASED."
+  echo
+  for i in "${!disks[@]}"; do echo "    $((i + 1)))  ${disks[$i]}  $(describe_disk "${disks[$i]}")"; done
+  echo
+  if [ "$n" = 1 ]; then
+    echo "  Press I to install on ${disks[0]}, or any other key to keep running"
+  else
+    echo "  Press the number of the disk to install on, or any other key to keep running"
+  fi
+  echo "  from the USB stick. (Continuing from the USB stick in 60 seconds.)"
+  key=""
+  read -r -s -n 1 -t 60 key
+  target=""
+  if [ "$n" = 1 ] && [[ "$key" == [iI] ]]; then target=${disks[0]}; fi
+  if [[ "$key" =~ ^[1-9]$ ]] && [ "$key" -le "$n" ]; then target=${disks[$((key - 1))]}; fi
+  if [ -z "$target" ]; then touch "$STATE/install-declined"; return; fi
+
+  echo
+  echo "  Erase $target ($(describe_disk "$target")) and install Signage OS?"
+  echo "  Type YES and press Enter to continue."
+  local answer=""
+  read -r -t 120 answer
+  if [ "$answer" != YES ]; then touch "$STATE/install-declined"; return; fi
+
+  title
+  echo "  Installing on $target… (a few minutes)"
+  if ! signage-install-disk "$target" / >>"$STATE/firstboot.log" 2>&1; then
+    echo
+    echo "  The installation failed. Details: $STATE/firstboot.log"
+    echo "  Continuing from the USB stick."
+    touch "$STATE/install-declined"
+    sleep 20
+    return
+  fi
+  if [ -d /sys/firmware/efi ]; then
+    local esp
+    esp=$(lsblk -lnpo NAME,PARTLABEL "$target" | awk '$2=="SIGNAGE"{print $1}')
+    efibootmgr -c -d "$target" -p "${esp##*[!0-9]}" -L "Signage OS" -l '\EFI\BOOT\BOOTX64.EFI' >&2 || true
+  fi
+  title
+  echo "  Signage OS is installed on $target."
+  echo
+  echo "  Remove the USB stick now. The computer restarts by itself."
+  echo 1 > /proc/sys/kernel/sysrq
+  for _ in $(seq 120); do [ -b "$root" ] || break; sleep 1; done
+  sync
+  echo b > /proc/sysrq-trigger
+  sleep 30
+}
+
+# --- Wi-Fi: wifi.txt with "ssid=..." and "password=..." lines -----------------
+apply_wifi() {
+  local file=$1 ssid password
+  ssid=$(sed -n 's/^ssid=//p' "$file" | head -1 | tr -d '\r')
+  password=$(sed -n 's/^password=//p' "$file" | head -1 | tr -d '\r')
+  [ -n "$ssid" ] || return
+  [ -e "$STATE/wifi-$(echo "$ssid" | md5sum | cut -c1-8)" ] && return
+  log "joining Wi-Fi $ssid"
+  nmcli radio wifi on >&2
+  sleep 3
+  if [ -n "$password" ]; then
+    nmcli dev wifi connect "$ssid" password "$password" >&2 && touch "$STATE/wifi-$(echo "$ssid" | md5sum | cut -c1-8)"
+  else
+    nmcli dev wifi connect "$ssid" >&2 && touch "$STATE/wifi-$(echo "$ssid" | md5sum | cut -c1-8)"
+  fi
+}
+
+# Looks at one directory for wifi.txt and the newest setup file.
+check_dir() {
+  local dir=$1 found
+  [ -f "$dir/wifi.txt" ] && apply_wifi "$dir/wifi.txt"
+  found=$(ls -t "$dir"/signage-linux-setup*.sh 2>/dev/null | head -1)
+  if [ -n "$found" ] && grep -q '^__SIGNAGE_PAYLOAD_BELOW__' "$found"; then
+    log "setup file $found"
+    cp "$found" "$SETUP.new" && mv "$SETUP.new" "$SETUP"
+    return 0
+  fi
+  return 1
+}
+
+check_usb() {
+  local root mnt=/run/signage-usb dev rc
+  root=$(root_disk)
+  mkdir -p "$mnt"
+  for dev in $(lsblk -rnpo NAME); do
+    case "$(lsblk -dno FSTYPE "$dev")" in vfat|exfat|ntfs|ext4|ext3|ext2) ;; *) continue ;; esac
+    findmnt -n -S "$dev" >/dev/null && continue
+    [ "/dev/$(lsblk -no PKNAME "$dev" | head -1)" = "$root" ] && continue
+    mount -o ro "$dev" "$mnt" 2>/dev/null || mount -t ntfs3 -o ro "$dev" "$mnt" 2>/dev/null || continue
+    check_dir "$mnt"
+    rc=$?
+    umount "$mnt"
+    [ $rc = 0 ] && return 0
+  done
+  return 1
+}
+
+check_network() {
+  local url
+  for url in $SERVER_URLS; do
+    if curl -fsSk --max-time 8 "$url/addon/signage-linux-setup.sh" -o "$SETUP.new" 2>/dev/null \
+      && grep -q '^__SIGNAGE_PAYLOAD_BELOW__' "$SETUP.new"; then
+      log "setup file from $url"
+      mv "$SETUP.new" "$SETUP"
+      return 0
+    fi
+  done
+  rm -f "$SETUP.new"
+  return 1
+}
+
+find_setup() {
+  local dir
+  for dir in $BOOT_DIRS; do check_dir "$dir" && return 0; done
+  check_usb && return 0
+  check_network && return 0
+  return 1
+}
+
+waiting_screen() {
+  local ip
+  ip=$(addresses)
+  title
+  echo "  This screen is almost ready. It needs the setup file from your"
+  echo "  Signage console (Screens > Add a screen > Raspberry Pi / Linux)."
+  echo
+  echo "  Either:"
+  echo "   - put signage-linux-setup.sh on a USB stick and plug it in here, or"
+  echo "   - copy it onto the SIGNAGE drive of the Signage OS stick / SD card."
+  echo
+  echo "  A Signage server on this network called signage.local is found"
+  echo "  automatically."
+  echo
+  echo "  Wi-Fi: add a wifi.txt file next to the setup file containing"
+  echo "         ssid=YourNetwork"
+  echo "         password=YourPassword"
+  echo
+  if [ -n "$ip" ]; then echo "  Network: connected ($ip)"; else echo "  Network: not connected yet"; fi
+  echo "  Device:  $(hostname)"
+}
+
+main() {
+  [ "$PLATFORM" = pc ] && grow_root
+  offer_install
+  local shown=""
+  until find_setup; do
+    local now
+    now="$(addresses)"
+    if [ "$shown" != "x$now" ]; then waiting_screen; shown="x$now"; fi
+    sleep 5
+  done
+  title
+  echo "  Setting up the Signage player…"
+  if ! SIGNAGE_NO_START=1 bash "$SETUP" >>"$STATE/firstboot.log" 2>&1; then
+    echo
+    echo "  The setup file did not install. Details: $STATE/firstboot.log"
+    echo "  Trying again in 60 seconds."
+    rm -f "$SETUP"
+    sleep 60
+    exit 1
+  fi
+  echo "  Done. Starting the player."
+  systemctl --no-block start signage-agent.service signage-kiosk.service
+}
+
+main

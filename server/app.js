@@ -333,6 +333,7 @@ export async function createApp({
     fingerprint: keys.fingerprint,
     addonVersion: ADDON_VERSION,
     agentVersion: agentVersion(),
+    signageOsUrl: process.env.SIGNAGE_OS_URL || 'https://github.com/captainpawpaw/Signage/releases/latest',
     extensionId: addonId(keys),
     candidates: candidates(),
     updateUrl: `${updateBase()}/addon/updates.xml`,

@@ -23,6 +23,8 @@ done
 setterm --blank 0 --powersave off --cursor off 2>/dev/null
 
 log() { echo "$(date -Is) $*" >&2; }
+# Progress on the serial port too (automated tests, troubleshooting with a cable).
+status() { log "$*"; timeout 2 sh -c "echo 'signage-os: $*' > /dev/ttyS0" 2>/dev/null; }
 title() {
   clear
   printf '\n  \033[1mSignage OS\033[0m\n\n'
@@ -77,6 +79,7 @@ offer_install() {
   n=${#disks[@]}
   [ "$n" -gt 0 ] || return
 
+  status "install-offer"
   title
   echo "  Signage OS is running from a USB stick."
   echo
@@ -105,6 +108,7 @@ offer_install() {
   read -r -t 120 answer
   if [ "$answer" != YES ]; then touch "$STATE/install-declined"; return; fi
 
+  status "installing on $target"
   title
   echo "  Installing on $target… (a few minutes)"
   if ! signage-install-disk "$target" / >>"$STATE/firstboot.log" 2>&1; then
@@ -120,6 +124,7 @@ offer_install() {
     esp=$(lsblk -lnpo NAME,PARTLABEL "$target" | awk '$2=="SIGNAGE"{print $1}')
     efibootmgr -c -d "$target" -p "${esp##*[!0-9]}" -L "Signage OS" -l '\EFI\BOOT\BOOTX64.EFI' >&2 || true
   fi
+  status "installed, remove the stick"
   title
   echo "  Signage OS is installed on $target."
   echo
@@ -229,9 +234,10 @@ main() {
   until find_setup; do
     local now
     now="$(addresses)"
-    if [ "$shown" != "x$now" ]; then waiting_screen; shown="x$now"; fi
+    if [ "$shown" != "x$now" ]; then waiting_screen; status "waiting for the setup file"; shown="x$now"; fi
     sleep 5
   done
+  status "setup file found"
   title
   echo "  Setting up the Signage player…"
   if ! SIGNAGE_NO_START=1 bash "$SETUP" >>"$STATE/firstboot.log" 2>&1; then
@@ -243,6 +249,7 @@ main() {
     exit 1
   fi
   echo "  Done. Starting the player."
+  status "player installed"
   systemctl --no-block start signage-agent.service signage-kiosk.service
 }
 

@@ -57,7 +57,7 @@ if [ "$MODE" = install ]; then
   qemu-img convert -O raw "$WORK/os.qcow2" "$WORK/stick.img"
   mcopy -o -i "$WORK/stick.img@@$((ESP_START * 512))" "$WORK/signage-linux-setup.sh" ::
   qemu-img create -q -f qcow2 "$WORK/internal.qcow2" 16G
-  DRIVES+=(-drive "if=none,id=stick,format=raw,file=$WORK/stick.img" -device "usb-storage,bus=xhci.0,drive=stick,removable=on,bootindex=0")
+  DRIVES+=(-drive "if=none,id=stick,format=raw,file=$WORK/stick.img" -device "usb-storage,bus=xhci.0,drive=stick,removable=on,bootindex=0,id=stickdev")
   DRIVES+=(-drive "if=none,id=internal,format=qcow2,file=$WORK/internal.qcow2" -device "virtio-blk-pci,drive=internal,bootindex=1")
 else
   mkfs.vfat -C -n USBSTICK "$WORK/usb.img" 32768 >/dev/null
@@ -78,20 +78,30 @@ qemu-system-x86_64 $ACCEL -m 3072 -smp 2 "${FW[@]}" -device qemu-xhci,id=xhci "$
 QEMU_PID=$!
 START=$(date +%s)
 
+serial() { # waits for a "signage-os: ..." progress line from the first start
+  echo "   waiting for: $1"
+  until grep -q "signage-os: $1" "$WORK/serial.log" 2>/dev/null; do
+    [ "$(elapsed)" -lt "$TIMEOUT" ] || { echo "FAIL: no \"$1\" after $(elapsed)s"; shot fail; tail -c 3000 "$WORK/serial.log"; exit 1; }
+    kill -0 "$QEMU_PID" 2>/dev/null || { echo "QEMU exited"; cat "$WORK/qemu.log"; exit 1; }
+    sleep 3
+  done
+}
+
 if [ "$MODE" = install ]; then
-  echo "== Waiting for the install offer"
-  sleep 120
+  echo "== Install from the stick onto the internal disk"
+  serial install-offer
+  sleep 3
   shot 1-install-offer
   monitor "sendkey i"; sleep 3
   for key in shift-y shift-e shift-s ret; do monitor "sendkey $key"; sleep 0.5; done
-  sleep 20
+  serial "installing on"
   shot 2-installing
-  echo "== Waiting for the copy to finish, then removing the stick"
-  sleep "${SIGNAGE_TEST_INSTALL_WAIT:-600}"
+  serial "installed, remove the stick"
+  echo "installed after $(elapsed)s"
   shot 3-remove-stick
-  monitor "device_del usb-storage"
-  monitor "info usb"
+  monitor "device_del stickdev"
 fi
+serial "player installed"
 
 echo "== Waiting for the pairing request (up to ${TIMEOUT}s)"
 CODE=""

@@ -171,6 +171,8 @@ async function screensView() {
       h('dl', { class: 'kv' },
         h('dt', {}, 'Location'), h('dd', {}, s.location || '—'),
         h('dt', {}, 'Now playing'), h('dd', {}, plName(s.activePlaylistId), h('span', { class: 'muted' }, via)),
+        h('dt', {}, 'Up next'), h('dd', { title: (s.upcoming || []).map((u) => `${whenLabel(u.at)}: ${u.playlistName || 'nothing'}`).join('\n') },
+          s.upcoming?.length ? `${s.upcoming[0].playlistName || 'nothing scheduled'} · ${whenLabel(s.upcoming[0].at)}` : '—'),
         h('dt', {}, 'Progress'), h('dd', {}, showing),
         h('dt', {}, 'Display'), h('dd', {}, st.display ? `${st.display.width}×${st.display.height} · ${s.settings.orientation}${st.lowPower ? ' · low-power' : ''}` : s.settings.orientation),
         h('dt', {}, 'Address'), h('dd', {}, st.ip || '—'),
@@ -214,6 +216,17 @@ async function screensView() {
     view.querySelector('.grid')?.replaceChildren(...fresh.map(card));
     bannerSlot.replaceChildren(waiting(freshPairings));
   }), 5000);
+}
+
+// "14:30", "tomorrow 08:00", "Fri 08:00" or "3 Nov 08:00", in this browser's time.
+function whenLabel(iso) {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400_000);
+  if (days === 0) return time;
+  if (days === 1) return `tomorrow ${time}`;
+  if (days < 7) return `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+  return `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time}`;
 }
 
 function browserName(ua = '') {

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Hub } from './realtime.js';
 import { buildManifest, forPlayer, DEFAULT_SETTINGS } from './manifest.js';
-import { activeRule, DEFAULT_TIMEZONE } from './schedule.js';
+import { activeRule, resolvePlaylistId, scheduleTimeline, DEFAULT_TIMEZONE } from './schedule.js';
 import { ADDON_VERSION, addonId, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
 import { ServerKeys, CHUNK_SIZE, chunkCount, encryptChunk, newFileKey } from './crypto.js';
@@ -165,7 +165,8 @@ export async function createApp({
       settings: { ...DEFAULT_SETTINGS, ...s.settings },
       paired: Boolean(s.device),
       device: s.device ? { pairedAt: s.device.pairedAt, userAgent: s.device.userAgent } : null,
-      activePlaylistId: buildManifest(store, s).playlist?.id || null,
+      activePlaylistId: resolvePlaylistId(s, new Date(), store.groups),
+      upcoming: upcomingChanges(s),
       activeRuleId: rule?.id || null,
       activeGroup: rule?.group || null,
       status: hub.status(s.id),
@@ -175,6 +176,16 @@ export async function createApp({
     url: `/player/player.html#token=${encodeURIComponent(screen.previewToken)}`,
     shortUrl: screen.shortCode ? `/p/${screen.shortCode}` : null,
   });
+  // The next few scheduled playlist changes, for the console.
+  const upcomingChanges = (screen, count = 3) => {
+    const now = Date.now();
+    const { segments } = scheduleTimeline(screen, store.groups, now);
+    return segments.filter((seg) => seg.from > now).slice(0, count).map((seg) => ({
+      at: new Date(seg.from).toISOString(),
+      playlistId: seg.playlistId,
+      playlistName: store.playlists.find((p) => p.id === seg.playlistId)?.name || null,
+    }));
+  };
   const findOr404 = (list, itemId, what) => {
     const item = list.find((x) => x.id === itemId);
     if (!item) throw new HttpError(404, `${what} not found`);
@@ -230,7 +241,7 @@ export async function createApp({
   app.get('/api/player/manifest', (req, res) => {
     const screen = previewScreenFromRequest(store, req);
     if (!screen) throw new HttpError(401, 'Unknown screen token');
-    res.set('Cache-Control', 'no-store').json(forPlayer(buildManifest(store, screen), 'plain'));
+    res.set('Cache-Control', 'no-store').json({ ...forPlayer(buildManifest(store, screen), 'plain'), serverTime: Date.now() });
   });
 
   // Encrypted devices fetch files as AES-GCM chunks, authorised by the session

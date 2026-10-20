@@ -293,6 +293,37 @@ test('offline notice: default, settings with QR, per-screen override', async () 
   await call('PUT', '/api/settings', { offline: { message: '', qr: '', position: 'corner' } });
 });
 
+test('screens get a timetable and every playlist it needs', async () => {
+  const breakfast = (await call('POST', '/api/playlists', { name: 'Breakfast', items: [{ mediaId: shared.image.id, duration: 3 }] })).body;
+  const s = (await call('POST', '/api/screens', {
+    name: 'Timetable', timezone: 'Europe/London', defaultPlaylistId: shared.pl.id,
+    schedule: [{ playlistId: breakfast.id, start: '07:00', end: '09:00' }],
+  })).body;
+  const m = (await call('GET', `/api/screens/${s.id}/manifest`)).body;
+  assert.deepEqual(Object.keys(m.playlists).sort(), [shared.pl.id, breakfast.id].sort());
+  assert.ok(m.playlists[breakfast.id].items.length);
+  // 8 days: one breakfast window per day, each followed by the default again.
+  const breakfastStarts = m.timeline.filter((seg) => seg.playlistId === breakfast.id);
+  assert.ok(breakfastStarts.length >= 7 && breakfastStarts.length <= 9);
+  for (const seg of breakfastStarts) {
+    const local = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' }).format(seg.from);
+    assert.equal(local, '07:00');
+  }
+  assert.ok(m.timelineEnd > Date.now() + 7 * 86400_000);
+  assert.equal(m.playlist.id, m.timeline.filter((seg) => seg.from <= Date.now()).at(-1).playlistId);
+
+  const view = (await call('GET', `/api/screens/${s.id}`)).body;
+  assert.ok(view.upcoming.length >= 1);
+  assert.ok([breakfast.name, 'Lobby'].includes(view.upcoming[0].playlistName));
+
+  // Preview players get the playlists with URLs; the HTTP fallback carries the server clock.
+  const token = ctx.store.screens.find((x) => x.id === s.id).previewToken;
+  const polled = (await call('GET', '/api/player/manifest', null, { authorization: `Bearer ${token}` })).body;
+  assert.match(polled.playlists[breakfast.id].items[0].url, /^\/files\//);
+  assert.ok(Math.abs(polled.serverTime - Date.now()) < 5000);
+  await call('DELETE', `/api/screens/${s.id}`);
+});
+
 test('short links resist guessing', async () => {
   let last;
   for (let i = 0; i < 22; i++) last = (await fetch(`${base}/p/ZZZZZ${i % 10}`, { redirect: 'manual' })).status;

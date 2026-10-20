@@ -78,3 +78,94 @@ export function resolvePlaylistId(screen, now = new Date(), groups = []) {
   if (rule) return rule.playlistId;
   return screen.defaultPlaylistId || screenGroups(screen, groups).find((g) => g.defaultPlaylistId)?.defaultPlaylistId || null;
 }
+
+// ---------- timetable for offline switching ----------
+// Screens get the playlist changes for the coming days so they can switch at
+// the right moment even when they can't reach the server. Segments are
+// [{ from: epoch ms, playlistId }], each running until the next one starts.
+
+export const TIMELINE_DAYS = 8;
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const formatters = new Map();
+
+// Offset of the time zone from UTC at instant t, in ms (handles DST).
+function zoneOffset(t, timeZone) {
+  if (!formatters.has(timeZone)) {
+    formatters.set(timeZone, new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }));
+  }
+  const p = Object.fromEntries(formatters.get(timeZone).formatToParts(new Date(t)).map((x) => [x.type, Number(x.value)]));
+  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  return asUtc - Math.floor(t / MINUTE) * MINUTE;
+}
+
+const dateStrings = new Map();
+function partsFromLocal(localMs) {
+  const dayNumber = Math.floor(localMs / DAY);
+  if (!dateStrings.has(dayNumber)) {
+    if (dateStrings.size > 5000) dateStrings.clear();
+    dateStrings.set(dayNumber, new Date(dayNumber * DAY).toISOString().slice(0, 10));
+  }
+  return {
+    date: dateStrings.get(dayNumber),
+    minutes: Math.floor((localMs - dayNumber * DAY) / MINUTE),
+    weekday: (dayNumber + 4) % 7, // 1 Jan 1970 was a Thursday
+  };
+}
+
+const timelineCache = new Map();
+
+// Minute-by-minute evaluation over the window, using a zone offset refreshed
+// every 15 minutes (DST changes happen on those boundaries). Cached per day.
+export function scheduleTimeline(screen, groups = [], now = Date.now(), days = TIMELINE_DAYS) {
+  const timeZone = screen.timezone || DEFAULT_TIMEZONE;
+  const rules = effectiveRules(screen, groups).filter((r) => r.enabled !== false);
+  const fallback = screen.defaultPlaylistId || screenGroups(screen, groups).find((g) => g.defaultPlaylistId)?.defaultPlaylistId || null;
+  const start = Math.floor(now / DAY) * DAY; // UTC midnight: stable for a whole day
+  const end = start + days * DAY;
+  const key = JSON.stringify([timeZone, rules, fallback, start, days]);
+  if (timelineCache.has(key)) return timelineCache.get(key);
+
+  // The answer can only change at a rule's start/end minute, at local midnight
+  // (date ranges and weekdays) or when the clocks change, so only look then.
+  const boundaries = new Set([0]);
+  for (const r of rules) { boundaries.add(toMinutes(r.start, 0)); boundaries.add(toMinutes(r.end, 24 * 60) % (24 * 60)); }
+  const segments = [];
+  let offset = null;
+  for (let t = start; t < end; t += MINUTE) {
+    let offsetChanged = false;
+    if ((t - start) % (15 * MINUTE) === 0) {
+      const next = zoneOffset(t, timeZone);
+      offsetChanged = next !== offset;
+      offset = next;
+    }
+    const localMinute = Math.floor(((t + offset) % DAY + DAY) % DAY / MINUTE);
+    if (segments.length && !offsetChanged && !boundaries.has(localMinute)) continue;
+    const parts = partsFromLocal(t + offset);
+    let best = null;
+    for (const rule of rules) {
+      if (ruleMatches(rule, parts) && (!best || (rule.priority || 0) > (best.priority || 0))) best = rule;
+    }
+    const playlistId = best ? best.playlistId : fallback;
+    if (!segments.length || segments[segments.length - 1].playlistId !== playlistId) segments.push({ from: t, playlistId });
+  }
+  const result = { start, end, segments };
+  if (timelineCache.size > 500) timelineCache.clear();
+  timelineCache.set(key, result);
+  return result;
+}
+
+// Which playlist a timetable says should play at time t. Past the end, the
+// last week of the timetable repeats (weekly rules keep working).
+export function playlistAt(timeline, t) {
+  const week = 7 * DAY;
+  if (t >= timeline.end) t = timeline.end - week + ((t - (timeline.end - week)) % week);
+  let current = timeline.segments[0]?.playlistId ?? null;
+  for (const s of timeline.segments) {
+    if (s.from > t) break;
+    current = s.playlistId;
+  }
+  return current;
+}

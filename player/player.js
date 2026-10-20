@@ -12,10 +12,11 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.1.1';
+  const PLAYER_VERSION = '2.2.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
+  const CLOCK_KEY = 'signage.clockOffset';
   const SERVER_KEY = 'signage.server';
   const ADDR_KEY = 'signage.addresses';
   const POLL_MS = 60_000;
@@ -236,30 +237,87 @@
     pending = pending.then(() => doApply(next)).catch((err) => console.error('[signage] apply failed', err));
   }
 
+  // Every item the manifest might need: all playlists the schedule switches to.
+  function allItems(m) {
+    const seen = new Map();
+    for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items)]) {
+      for (const item of list) if (!seen.has(assetKey(item))) seen.set(assetKey(item), item);
+    }
+    return [...seen.values()];
+  }
+
   async function doApply(next) {
     if (manifest && next.version === manifest.version) return;
+    if (typeof next.serverTime === 'number') {
+      clockOffset = next.serverTime - Date.now();
+      store.set(CLOCK_KEY, clockOffset);
+    }
     lowPower = isLowPower(next.settings);
+    // Prepare everything the schedule may need, so switches also work offline.
     // One at a time: keeps the memory budget accurate and spares small devices.
-    const results = [];
-    for (const item of next.items) results.push(await prepare(item).then(() => ({ status: 'fulfilled' }), (reason) => ({ status: 'rejected', reason })));
-    results.forEach((r, i) => r.status === 'rejected' && console.warn('[signage] asset failed', next.items[i].id, r.reason));
-    const items = next.items.filter((_, i) => results[i].status === 'fulfilled');
+    const needed = allItems(next);
+    const failed = new Set();
+    for (const item of needed) {
+      await prepare(item).catch((err) => { failed.add(assetKey(item)); console.warn('[signage] asset failed', item.id, err); });
+    }
+    const ok = (items) => items.filter((it) => !failed.has(assetKey(it)));
+    const playlists = Object.fromEntries(Object.entries(next.playlists || {}).map(([id, p]) => [id, { ...p, items: ok(p.items) }]));
 
-    manifest = { ...next, items };
+    manifest = { ...next, playlists, items: ok(next.items || []) };
     store.set(MANIFEST_KEY, next);
     applySettings(manifest.settings || {});
     if (!$('#offline').hidden) showOffline();
     document.title = `Signage – ${manifest.screen?.name || ''}`;
-    index = -1;
-    advance();
-    prefetchStreams(items);
-    latestKeep = next.items.map(assetKey);
+    switchPlaylist(true);
+    prefetchStreams(needed.filter((it) => !failed.has(assetKey(it))));
+    latestKeep = needed.map(assetKey);
     // Drop what's no longer used once the outgoing item has faded out. Queued on
     // the same chain, and always against the newest manifest, so it never frees
     // files a later manifest has just loaded.
     setTimeout(() => { pending = pending.then(() => pruneAssets(latestKeep)).catch(() => {}); }, 2000);
     sendStatus();
     setTimeout(sendScreenshot, 3000);
+  }
+
+  // ---------- schedule ----------
+  // The server sends a timetable of playlist changes for the coming days; the
+  // player follows it by itself (with the server's clock), so screens switch on
+  // time even when they can't reach the server.
+  const WEEK = 7 * 24 * 3600 * 1000;
+  let clockOffset = store.get(CLOCK_KEY) || 0;
+  let activeId;
+  let activeItems = [];
+  const now = () => Date.now() + clockOffset;
+
+  function scheduledPlaylistId(m) {
+    const timeline = m?.timeline;
+    if (!timeline?.length) return m?.playlist?.id || null;
+    let t = now();
+    // Past the end of the timetable, repeat its last week.
+    if (m.timelineEnd && t >= m.timelineEnd) t = m.timelineEnd - WEEK + ((t - (m.timelineEnd - WEEK)) % WEEK);
+    let id = timeline[0].playlistId;
+    for (const seg of timeline) { if (seg.from > t) break; id = seg.playlistId; }
+    return id;
+  }
+
+  function itemsOf(m, id) {
+    if (m?.playlists && id in m.playlists) return m.playlists[id].items;
+    return id && id === m?.playlist?.id ? m.items || [] : [];
+  }
+
+  // force: a new manifest arrived. Keeps playing without a restart when the
+  // playlist on screen hasn't actually changed.
+  function switchPlaylist(force = false) {
+    if (!manifest) return;
+    const id = scheduledPlaylistId(manifest);
+    const items = itemsOf(manifest, id);
+    const same = id === activeId && items.map((i) => i.id).join() === activeItems.map((i) => i.id).join();
+    if (same && (activeItems.length || !force)) { activeItems = items; return; }
+    activeId = id;
+    activeItems = items;
+    index = -1;
+    advance();
+    sendStatus();
   }
 
   function applySettings(s) {
@@ -271,6 +329,8 @@
 
   async function forgetContent() {
     manifest = null;
+    activeId = undefined;
+    activeItems = [];
     latestKeep = [];
     store.del(MANIFEST_KEY);
     await pruneAssets([]);
@@ -297,8 +357,8 @@
 
   function advance() {
     clearTimeout(advanceTimer);
-    const items = manifest?.items || [];
-    if (!items.length) return showIdle(manifest?.playlist ? 'Playlist is empty' : 'No content scheduled');
+    const items = activeItems;
+    if (!items.length) return showIdle(activeId ? 'Playlist is empty' : 'No content scheduled');
     $('#idle').hidden = true;
     index = (index + 1) % items.length;
     const item = items[index];
@@ -537,10 +597,10 @@
 
   function sendStatus() {
     if (!manifest) return;
-    const item = manifest.items[index];
+    const item = activeItems[index];
     send({
-      type: 'status', version: manifest.version, playlistId: manifest.playlist?.id || null,
-      index, itemId: item?.id || null, itemCount: manifest.items.length, lowPower,
+      type: 'status', version: manifest.version, playlistId: activeId || null,
+      index, itemId: item?.id || null, itemCount: activeItems.length, lowPower,
     });
   }
 
@@ -618,7 +678,7 @@
       const el = $('#identify');
       el.replaceChildren(manifest?.screen?.name || 'Screen');
       const small = document.createElement('small');
-      small.textContent = `${manifest?.playlist?.name || 'No playlist'} · ${screen.width}×${screen.height} · ${MODE === 'device' ? 'encrypted' : 'preview'}${lowPower ? ' · low-power' : ''}`;
+      small.textContent = `${manifest?.playlists?.[activeId]?.name || manifest?.playlist?.name || 'No playlist'} · ${screen.width}×${screen.height} · ${MODE === 'device' ? 'encrypted' : 'preview'}${lowPower ? ' · low-power' : ''}`;
       el.append(small);
       el.hidden = false;
       setTimeout(() => { el.hidden = true; }, 10_000);
@@ -646,12 +706,13 @@
     }
     const saved = store.get(MANIFEST_KEY);
     // Offline start: replay the last manifest from the encrypted local cache.
-    if (saved && (MODE === 'device' || saved.items.every((it) => it.url))) applyManifest(saved);
+    if (saved && (MODE === 'device' || allItems(saved).every((it) => it.url))) applyManifest(saved);
     else showIdle('Connecting…');
     setConnected(false); // starts the timer; cleared as soon as the server answers
     connect();
     setInterval(poll, POLL_MS);
     setInterval(sendStatus, STATUS_MS);
+    setInterval(() => switchPlaylist(), 5000);
     setInterval(() => { if (!lowPower) sendScreenshot(); }, SCREENSHOT_MS);
   }
   boot();

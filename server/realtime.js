@@ -201,7 +201,8 @@ export class Hub {
         },
       });
     // Previews load the player from this server, so they can update themselves.
-    this.#send(conn, { type: 'manifest', manifest: shaped, ...(conn.mode === 'preview' ? { playerVersion: this.playerVersion } : {}) });
+    // serverTime lets players correct their clock so scheduled switches happen on time.
+    this.#send(conn, { type: 'manifest', manifest: { ...shaped, serverTime: Date.now() }, ...(conn.mode === 'preview' ? { playerVersion: this.playerVersion } : {}) });
   }
 
   #screenshot(conn, msg) {

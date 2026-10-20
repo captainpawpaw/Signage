@@ -83,3 +83,12 @@ mkdir -p "$R/etc/systemd/system/sysinit.target.wants"
 ln -sf /etc/systemd/system/signage-hostname.service "$R/etc/systemd/system/sysinit.target.wants/signage-hostname.service"
 
 echo 'LANG=C.UTF-8' > "$R/etc/default/locale"
+
+# Big, readable text on the screen's own console (first start, troubleshooting).
+cat > "$R/etc/default/console-setup" <<'EOF'
+ACTIVE_CONSOLES="/dev/tty[1-6]"
+CHARMAP="UTF-8"
+CODESET="Lat15"
+FONTFACE="TerminusBold"
+FONTSIZE="16x32"
+EOF

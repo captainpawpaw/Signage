@@ -43,6 +43,13 @@ fullscreen.
 - **Scheduling.** Each screen has a default playlist plus rules. A rule can
   set days of the week, a time window (overnight windows are allowed), a date
   range and a priority. Rules use each screen's own time zone.
+  - **Switches on time, even offline.** Each screen receives a timetable of
+    its playlist changes for the next 8 days, along with the content for each
+    playlist. It switches by itself at the right time, whether or not the
+    server is reachable, using the server's clock to correct its own. If a
+    screen stays offline longer than that, the weekly pattern repeats.
+  - **Up next.** Each screen card in the console shows the next scheduled
+    change.
 - **Groups.** Put screens into groups such as "Ground floor" or "Canteen". A
   group can have its own default playlist and schedule. You can also send a
   command to every screen in a group at once: Identify, Screenshots or Reload.

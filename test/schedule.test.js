@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ruleMatches, resolvePlaylistId, localParts } from '../server/schedule.js';
+import { ruleMatches, resolvePlaylistId, localParts, scheduleTimeline, playlistAt } from '../server/schedule.js';
 
 // 2026-10-14 is a Wednesday (weekday 3).
 const at = (date, minutes, weekday) => ({ date, minutes, weekday });
@@ -44,4 +44,33 @@ test('highest priority wins, falls back to default playlist', () => {
   assert.equal(resolvePlaylistId(screen, new Date('2026-10-14T09:00:00Z')), 'work');
   assert.equal(resolvePlaylistId(screen, new Date('2026-10-14T12:30:00Z')), 'lunch');
   assert.equal(resolvePlaylistId(screen, new Date('2026-10-14T20:00:00Z')), 'default');
+});
+
+test('timetable agrees with the live schedule minute by minute, across clock changes', () => {
+  const zones = ['Europe/London', 'America/New_York', 'Australia/Lord_Howe', 'Asia/Kolkata', 'UTC'];
+  const groups = [{ id: 'g', name: 'G', defaultPlaylistId: 'group-default', schedule: [{ playlistId: 'group-lunch', start: '12:00', end: '13:00', priority: 1 }] }];
+  for (const when of ['2026-03-27T12:00:00Z', '2026-10-23T12:00:00Z']) {
+    for (const timezone of zones) {
+      const screen = {
+        timezone, groupIds: ['g'],
+        schedule: [
+          { playlistId: 'morning', days: [1, 2, 3, 4, 5], start: '08:00', end: '09:30' },
+          { playlistId: 'night', start: '22:00', end: '06:00', priority: 2 },
+          { playlistId: 'dst', start: '01:30', end: '02:30', priority: 3 },
+          { playlistId: 'event', start: '00:00', end: '00:00', startDate: '2026-10-28', endDate: '2026-10-29', priority: 5 },
+        ],
+      };
+      const tl = scheduleTimeline(screen, groups, Date.parse(when));
+      for (let t = tl.start; t < tl.end; t += 60_000) {
+        assert.equal(playlistAt(tl, t), resolvePlaylistId(screen, new Date(t), groups), `${timezone} at ${new Date(t).toISOString()}`);
+      }
+    }
+  }
+});
+
+test('past the end of the timetable the last week repeats', () => {
+  const screen = { timezone: 'UTC', defaultPlaylistId: 'd', schedule: [{ playlistId: 'mon', days: [1], start: '09:00', end: '10:00' }] };
+  const tl = scheduleTimeline(screen, [], Date.parse('2026-10-20T00:00:00Z'));
+  assert.equal(playlistAt(tl, Date.parse('2026-11-16T09:30:00Z')), 'mon'); // a Monday weeks later
+  assert.equal(playlistAt(tl, Date.parse('2026-11-17T09:30:00Z')), 'd');
 });

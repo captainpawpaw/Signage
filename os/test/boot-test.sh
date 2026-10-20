@@ -29,6 +29,8 @@ MON="$WORK/monitor.sock"
 ACCEL=$([ -w /dev/kvm ] && echo "-enable-kvm -cpu host" || echo "-cpu max")
 
 cleanup() {
+  local rc=$?
+  if [ "$rc" != 0 ] && [ -f "$WORK/server.log" ]; then echo "--- server log"; tail -40 "$WORK/server.log"; fi
   [ -n "${QEMU_PID:-}" ] && kill "$QEMU_PID" 2>/dev/null
   [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null
   rm -rf "$WORK"

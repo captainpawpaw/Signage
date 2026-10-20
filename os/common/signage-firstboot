@@ -18,7 +18,7 @@ mkdir -p "$STATE"
 exec 2>>"$STATE/firstboot.log"
 
 for font in /usr/share/consolefonts/Lat15-TerminusBold32x16.psf.gz /usr/share/consolefonts/Uni3-TerminusBold32x16.psf.gz; do
-  if [ -f "$font" ]; then setfont "$font" 2>/dev/null; break; fi
+  if [ -f "$font" ]; then setfont -C /dev/tty1 "$font" 2>/dev/null || setfont "$font"; break; fi
 done
 setterm --blank 0 --powersave off --cursor off 2>/dev/null
 

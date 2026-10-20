@@ -1,0 +1,9 @@
+{
+  "name": "signage-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Signage Linux player agent (Raspberry Pi and other Linux devices)",
+  "type": "module",
+  "main": "agent.js",
+  "engines": { "node": ">=18.15" }
+}

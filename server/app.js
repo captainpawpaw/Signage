@@ -11,7 +11,8 @@ import { Store } from './store.js';
 import { Hub } from './realtime.js';
 import { buildManifest, forPlayer, DEFAULT_SETTINGS } from './manifest.js';
 import { activeRule, resolvePlaylistId, scheduleTimeline, DEFAULT_TIMEZONE } from './schedule.js';
-import { ADDON_VERSION, addonId, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
+import { ADDON_VERSION, addonId, addonConfig, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
+import { agentVersion, buildAgentPackage, buildLinuxSetup } from './linux.js';
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
 import { ServerKeys, CHUNK_SIZE, chunkCount, encryptChunk, newFileKey } from './crypto.js';
 import { candidateUrls, startMdns } from './network.js';
@@ -194,7 +195,7 @@ export async function createApp({
   const changed = () => { store.save(); hub.refresh(); };
 
   // Players and screen PCs call these from other origins (the add-on, scripts).
-  app.use(['/api/hello', '/api/player', '/files', '/addon'], (req, res, next) => {
+  app.use(['/api/hello', '/api/player', '/files', '/addon', '/agent'], (req, res, next) => {
     res.set({
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Authorization, X-Signage-Session',
@@ -284,6 +285,18 @@ export async function createApp({
   app.get('/addon/signage.crx', async (req, res) => {
     res.set('Content-Type', 'application/x-chrome-extension').send(await buildAddonCrx(addonOpts()));
   });
+  // Linux player (Raspberry Pi etc.): the generic setup file, and the signed
+  // package the agent updates itself from.
+  const sendSetup = (res, name, config) => {
+    res.set({ 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` });
+    res.send(buildLinuxSetup(config));
+  };
+  app.get('/addon/signage-linux-setup.sh', (req, res) => sendSetup(res, 'signage-linux-setup.sh', addonConfig(addonOpts())));
+  app.get('/agent/version.json', (req, res) => res.set('Cache-Control', 'no-store').json({ serverId: store.settings.serverId, version: agentVersion() }));
+  app.get('/agent/signage-agent.tar.gz', (req, res) => {
+    const pkg = buildAgentPackage();
+    res.set({ 'Content-Type': 'application/gzip', 'X-Signage-Signature': keys.sign(pkg), 'Cache-Control': 'no-store' }).send(pkg);
+  });
   app.get('/addon/updates.xml', (req, res) => res.type('application/xml').send(updatesXml({ keys, updateBase: updateBase() })));
   app.get('/addon', (req, res) => res.redirect('/addon/'));
   app.get('/addon/', (req, res) => res.type('html').send(addonPage(store.settings, keys)));
@@ -303,6 +316,7 @@ export async function createApp({
     offline: { ...store.settings.offline, qrPreview: qrDataUrl(store.settings.offline.qr) },
     fingerprint: keys.fingerprint,
     addonVersion: ADDON_VERSION,
+    agentVersion: agentVersion(),
     extensionId: addonId(keys),
     candidates: candidates(),
     updateUrl: `${updateBase()}/addon/updates.xml`,
@@ -446,11 +460,12 @@ export async function createApp({
   // a one-time token. Each download issues a new token.
   app.get('/api/screens/:id/extension.zip', async (req, res) => {
     const screen = findOr404(store.screens, req.params.id, 'Screen');
-    const browser = req.query.browser === 'firefox' ? 'firefox' : 'chrome';
+    const browser = ['firefox', 'linux'].includes(req.query.browser) ? req.query.browser : 'chrome';
     screen.enrollToken = randomToken();
     store.save();
-    const zip = await buildAddonZip(addonOpts({ browser, screen }));
     const slug = screen.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'screen';
+    if (browser === 'linux') return sendSetup(res, `signage-linux-setup-${slug}.sh`, addonConfig(addonOpts({ screen })));
+    const zip = await buildAddonZip(addonOpts({ browser, screen }));
     res.set('Content-Type', 'application/zip');
     res.set('Content-Disposition', `attachment; filename="signage-${slug}-${browser}.zip"`);
     res.send(zip);
@@ -704,6 +719,7 @@ a.btn small{display:block;font-weight:400;opacity:.85}code{background:#e3e6eb;pa
 <p>Server: <strong>${esc(settings.serverName)}</strong></p>
 <a class="btn" href="screen-setup.zip">Windows screen PC installer<small>Add-on + kiosk start-up + automatic updates. Unzip, run setup-screen.bat.</small></a>
 <a class="btn" href="signage-chrome.zip">Add-on for Chrome / Edge<small>Unzip, open chrome://extensions, turn on Developer mode, Load unpacked.</small></a>
+<a class="btn" href="signage-linux-setup.sh">Raspberry Pi / Linux player<small>Copy to the device and run: sudo bash signage-linux-setup.sh</small></a>
 <a class="btn" href="signage-firefox.zip">Add-on for Firefox (testing)<small>about:debugging → This Firefox → Load Temporary Add-on → manifest.json.</small></a>
 <p>The player finds this server by itself and shows a pairing code. Enter it in the console under <strong>Screens → Pair a screen</strong>.</p>
 <p class="fp">Server key fingerprint: ${esc(keys.fingerprint)}</p>

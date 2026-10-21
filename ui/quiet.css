@@ -1,0 +1,126 @@
+/* Quiet: a minimal interface kit. Text shows up when it is needed and leaves when it is not.
+   Drop quiet.css + quiet.js into any app. No build step, no dependencies. */
+
+:root {
+  --q-bg: #fff; --q-text: #111; --q-muted: #8a8a8a; --q-line: #ececec; --q-hover: #f5f5f5;
+  --q-bad: #c62828;
+  --q-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --q-fast: 120ms; --q-slow: 400ms; --q-delay: 500ms;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --q-bg: #0e0e0e; --q-text: #ededed; --q-muted: #777; --q-line: #222; --q-hover: #181818;
+    --q-bad: #ff6b6b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --q-bg: #0e0e0e; --q-text: #ededed; --q-muted: #777; --q-line: #222; --q-hover: #181818;
+  --q-bad: #ff6b6b; color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: var(--q-bg); color: var(--q-text); font: 16px/1.5 var(--q-font); -webkit-font-smoothing: antialiased; }
+[hidden] { display: none !important; }
+h1, h2, h3 { font-weight: 500; letter-spacing: -0.01em; margin: 0; }
+h1 { font-size: 24px; } h2 { font-size: 18px; } h3 { font-size: 16px; }
+a { color: inherit; text-underline-offset: 3px; text-decoration-color: var(--q-line); }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 1px solid var(--q-text); outline-offset: 3px; }
+.q-muted { color: var(--q-muted); }
+
+/* Text kept for screen readers only. */
+.q-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Page: one narrow column, lots of air. */
+.q-page { max-width: 640px; margin: 0 auto; padding: 64px 16px; display: grid; gap: 40px; }
+.q-stack { display: grid; gap: 16px; }
+.q-row { display: flex; align-items: center; gap: 8px; }
+.q-row > .q-grow { flex: 1; min-width: 0; }
+
+/* Buttons are words. No boxes until you touch them. */
+button, .q-btn {
+  font: inherit; color: inherit; background: none; border: 0; border-radius: 6px; padding: 6px 10px;
+  cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  transition: background var(--q-fast);
+}
+button:hover, .q-btn:hover { background: var(--q-hover); }
+button:disabled { color: var(--q-muted); cursor: default; background: none; }
+.q-primary { font-weight: 600; }
+button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+
+/* Tooltip: icon buttons carry their name in data-tip; it appears only on hover or keyboard focus. */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 6px); translate: -50% -2px;
+  font-size: 12px; color: var(--q-muted); white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity var(--q-fast), translate var(--q-fast);
+}
+[data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; translate: -50% 0; transition-delay: var(--q-delay); }
+
+/* Field: the placeholder is the label. Once you type, the label floats in above so you never lose context.
+   The hint shows only while the field is focused; the error only after you have tried and got it wrong. */
+.q-field { display: grid; position: relative; padding-top: 18px; }
+.q-field > label {
+  position: absolute; top: 0; left: 0; font-size: 12px; color: var(--q-muted);
+  opacity: 0; translate: 0 6px; transition: opacity var(--q-fast), translate var(--q-fast);
+}
+.q-field:has(:is(input, textarea):not(:placeholder-shown)) > label, .q-field:has(select) > label { opacity: 1; translate: 0 0; }
+.q-field input, .q-field textarea, .q-field select {
+  font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--q-line);
+  padding: 6px 0; width: 100%; border-radius: 0; transition: border-color var(--q-fast);
+}
+.q-field input::placeholder, .q-field textarea::placeholder { color: var(--q-muted); }
+.q-field input:focus, .q-field textarea:focus, .q-field select:focus { outline: none; border-bottom-color: var(--q-text); }
+.q-field textarea { resize: vertical; min-height: 3em; }
+.q-hint, .q-error {
+  font-size: 12px; color: var(--q-muted); display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--q-fast), opacity var(--q-fast), padding var(--q-fast);
+}
+.q-hint > *, .q-error > * { overflow: hidden; }
+.q-error { color: var(--q-bad); }
+.q-field:focus-within .q-hint { grid-template-rows: 1fr; opacity: 1; padding-top: 4px; }
+.q-field:has(:user-invalid) .q-error { grid-template-rows: 1fr; opacity: 1; padding-top: 4px; }
+.q-field:has(:user-invalid) .q-hint { display: none; }
+.q-field:has(:user-invalid) :is(input, textarea, select) { border-bottom-color: var(--q-bad); }
+
+/* Switch: a checkbox with no box. */
+.q-switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.q-switch input { appearance: none; margin: 0; width: 28px; height: 16px; border-radius: 8px; background: var(--q-line); position: relative; cursor: pointer; transition: background var(--q-fast); }
+.q-switch input::before { content: ""; position: absolute; inset: 2px auto 2px 2px; width: 12px; border-radius: 50%; background: var(--q-bg); transition: translate var(--q-fast); }
+.q-switch input:checked { background: var(--q-text); }
+.q-switch input:checked::before { translate: 12px 0; }
+
+/* List: rows separated by air, not lines. A row's secondary actions appear only while you are on that row. */
+.q-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.q-list > li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin: 0 -10px; border-radius: 6px; min-height: 44px; }
+.q-list > li:hover { background: var(--q-hover); }
+.q-list > li > .q-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-list:empty::before { content: attr(data-empty); color: var(--q-muted); padding: 8px 0; }
+.q-reveal { opacity: 0; transition: opacity var(--q-fast); }
+:is(li, .q-row):is(:hover, :focus-within) .q-reveal { opacity: 1; }
+@media (hover: none) { .q-reveal { opacity: 1; } }
+
+/* Chrome: navigation and toolbars marked data-chrome fade away when you stop moving, and return on any input. */
+[data-chrome] { transition: opacity var(--q-slow); }
+.q-idle [data-chrome]:not(:focus-within):not(:hover) { opacity: 0; }
+.q-bar { display: flex; align-items: center; gap: 4px; }
+.q-bar nav { display: flex; gap: 2px; flex: 1; overflow-x: auto; }
+.q-bar nav a { padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--q-muted); white-space: nowrap; }
+.q-bar nav a:hover, .q-bar nav a[aria-current] { color: var(--q-text); }
+
+/* Toast: one line of text at the bottom that leaves by itself. Driven by quiet.say(). */
+.q-toast {
+  position: fixed; left: 50%; bottom: 24px; translate: -50% 8px; max-width: calc(100vw - 32px);
+  padding: 8px 14px; border-radius: 6px; background: var(--q-text); color: var(--q-bg); font-size: 14px;
+  opacity: 0; pointer-events: none; transition: opacity var(--q-fast), translate var(--q-fast); z-index: 100;
+}
+.q-toast.q-on { opacity: 1; translate: -50% 0; pointer-events: auto; }
+
+/* Busy: a button doing work says nothing; it just breathes. */
+[aria-busy="true"] { animation: q-breathe 1.2s ease-in-out infinite; pointer-events: none; }
+@keyframes q-breathe { 50% { opacity: 0.35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0ms !important; transition-delay: 0ms !important; animation: none !important; }
+}

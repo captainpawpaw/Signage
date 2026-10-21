@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quiet</title>
+  <link rel="stylesheet" href="quiet.css">
+  <script src="quiet.js" defer></script>
+</head>
+<body>
+  <header class="q-bar q-page" style="padding-block: 16px 0; gap: 4px" data-chrome>
+    <nav aria-label="Main">
+      <a href="#" aria-current="page">Home</a>
+      <a href="#">Media</a>
+      <a href="#">Settings</a>
+    </nav>
+    <button id="theme" data-tip="Theme" aria-label="Theme">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg>
+    </button>
+  </header>
+
+  <main class="q-page">
+    <h1>Screens</h1>
+
+    <form class="q-stack" id="add" novalidate>
+      <div class="q-field">
+        <label for="name">Name</label>
+        <input id="name" placeholder="Name" required minlength="2">
+        <div class="q-hint"><span>What people call this screen, e.g. Lobby.</span></div>
+        <div class="q-error"><span>At least two letters.</span></div>
+      </div>
+      <div class="q-field">
+        <label for="email">Contact</label>
+        <input id="email" type="email" placeholder="Contact email">
+        <div class="q-error"><span>That is not an email address.</span></div>
+      </div>
+      <div class="q-row">
+        <label class="q-switch"><input type="checkbox" checked> Online</label>
+        <span class="q-grow"></span>
+        <button class="q-primary" type="submit">Add</button>
+      </div>
+    </form>
+
+    <ul class="q-list" id="list" data-empty="No screens yet."></ul>
+  </main>
+
+  <script>
+    const list = document.getElementById('list');
+    const form = document.getElementById('add');
+    const row = (name) => {
+      const li = document.createElement('li');
+      li.innerHTML = '<span class="q-grow"></span>' +
+        '<button class="q-reveal" data-tip="Rename" aria-label="Rename"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></button>' +
+        '<button class="q-reveal" data-confirm="Remove?">Remove</button>';
+      li.firstChild.textContent = name;
+      li.lastChild.addEventListener('click', () => { li.remove(); quiet.say('Removed ' + name); });
+      li.children[1].addEventListener('click', () => quiet.say('Rename ' + name));
+      return li;
+    };
+    ['Lobby', 'Kitchen'].forEach((n) => list.append(row(n)));
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = form.elements.name;
+      if (!form.checkValidity()) { form.querySelector(':invalid').focus(); return; }
+      const btn = form.querySelector('[type=submit]');
+      await quiet.busy(btn, () => new Promise((r) => setTimeout(r, 700)));
+      list.append(row(input.value));
+      quiet.say('Added ' + input.value);
+      form.reset();
+    });
+
+    document.getElementById('theme').addEventListener('click', () => {
+      const r = document.documentElement;
+      const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+      r.dataset.theme = dark ? 'light' : 'dark';
+    });
+  </script>
+</body>
+</html>

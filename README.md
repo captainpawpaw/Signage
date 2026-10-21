@@ -44,9 +44,16 @@ fullscreen.
   a full-screen overlay. Each screen can use this default, have its own, or
   show nothing. Screens store the notice with their content, so it works while
   the server is unreachable.
-- **Scheduling.** Each screen has a default playlist plus rules. A rule can
-  set days of the week, a time window (overnight windows are allowed), a date
-  range and a priority. Rules use each screen's own time zone.
+- **Scheduling (the Schedule section).** Upload media as usual, then open
+  **Schedule** and click **+ Schedule content**:
+  - **Where:** pick any mix of screens and groups.
+  - **What:** an existing playlist, or media picked directly.
+  - **When:** always, or on chosen days and times, with an optional date range
+    and priority.
+
+  A week view for each screen or group shows exactly what will play and when.
+  There you can also set what plays when nothing is scheduled. Times use each
+  screen's own time zone, and windows can run overnight.
   - **Switches on time, even offline.** Each screen receives a timetable of
     its playlist changes for the next 8 days, along with the content for each
     playlist. It switches by itself at the right time, whether or not the
@@ -122,7 +129,49 @@ network. Its log is in `data\server.log`. To undo it, run
    Pair a screen** (or use the banner that appears), enter the code and pick a
    name and playlist.
 
+**Signage OS (dedicated screens, nothing else to install)**
+
+Ready-to-flash images with the operating system, browser and player built
+in. No Debian or Raspberry Pi OS installation and no downloads on the
+screen. Download them from the
+[latest release](https://github.com/captainpawpaw/Signage/releases/latest)
+(also linked from **Screens → Install add-on**).
+
+| Image | For |
+|-------|-----|
+| `signage-os-pi.img.xz` | Raspberry Pi 3, 4, 5, 400, 500, Zero 2 W |
+| `signage-os-pc.img.xz` | 64-bit PCs: old workstations, thin clients, laptops, mini PCs. BIOS or UEFI; Secure Boot works |
+
+1. Write the image to an SD card (Pi) or USB stick (PC) with Raspberry Pi
+   Imager or balenaEtcher. Both take the `.img.xz` as it is.
+2. A drive called **SIGNAGE** appears. Copy `signage-linux-setup.sh` from
+   the console onto it. For Wi-Fi, fill in `wifi.txt` there; Ethernet needs
+   nothing. If the server runs on the same network as `signage.local` (the
+   default), you can skip this step: the screen finds it by itself.
+   The setup file can also be on a second USB stick plugged into the screen.
+3. Start the screen from the card or stick. It installs the player and shows
+   a pairing code. Approve it under **Pair a screen**.
+
+On a PC started from a USB stick, Signage OS first offers to install itself on
+the internal disk. Press **I**, then type **YES**. Everything on that disk is
+erased. When it's done, pull the stick out and the PC restarts from its own
+disk. Ignore the offer and it keeps running from the stick.
+
+Laptops keep playing with the lid closed, and the screen never sleeps.
+On a Pi, the Wi-Fi and user settings in Raspberry Pi Imager still work.
+To troubleshoot at a keyboard, press Ctrl+Alt+F2 and log in as `admin` with
+password `signage`. You must choose a new password at the first login.
+Remote login (SSH) is off.
+
+The images are built by the **Signage OS images** GitHub Action (run it
+from the Actions tab, or push a tag like `os-2026.10.20`). It builds both
+images, boot-tests the PC image in QEMU against a real server, and publishes
+a release. To build locally (Linux, as root):
+`os/pc/build.sh out` and `os/pi/build.sh raspios-lite-arm64.img out`.
+
 **Raspberry Pi / Linux player (dedicated screens)**
+
+The same player installed on an existing system:
 
 Use this for screens that should run unattended for months.
 - **Supported:** Raspberry Pi OS Bookworm or newer (Lite or Desktop) on a
@@ -244,6 +293,7 @@ Limitations to be aware of:
 | `VIDEO_MAX_SIZE` | `1920`         | Longest video side in pixels. Use `3840` for 4K screens |
 | `DECK_WIDTH`     | `1920`         | Pixel width of rendered slides |
 | `MAX_UPLOAD_MB`  | `2048`         | Per-file upload limit |
+| `SIGNAGE_OS_URL` | GitHub releases | Where the console's Signage OS link points (e.g. your own mirror) |
 
 ## Managed roll-out (Group Policy / Intune)
 
@@ -280,6 +330,7 @@ admin/           admin console (vanilla JS, no build step)
 windows/         server auto-start and screen-PC setup/update scripts
 agent/           the Linux player agent (Raspberry Pi etc.)
 linux/           template of the Linux setup file (server/linux.js embeds the agent)
+os/              Signage OS image builds: pc/, pi/, shared first start (common/), QEMU boot test
 ```
 
 After changing anything in `player/` or `extension/`, bump `ADDON_VERSION` in

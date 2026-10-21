@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Hub } from './realtime.js';
 import { buildManifest, forPlayer, DEFAULT_SETTINGS } from './manifest.js';
-import { activeRule, resolvePlaylistId, scheduleTimeline, DEFAULT_TIMEZONE } from './schedule.js';
+import { activeRule, resolvePlaylistId, scheduleTimeline, localMidnights, defaultPlaylistId, DEFAULT_TIMEZONE } from './schedule.js';
 import { ADDON_VERSION, addonId, addonConfig, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
 import { agentVersion, buildAgentPackage, buildLinuxSetup } from './linux.js';
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
@@ -88,6 +88,21 @@ function migrate(store) {
   s.serverName ||= 'Signage';
   if (s.allowPlaintext === undefined) s.allowPlaintext = true;
   s.offline = { ...DEFAULT_OFFLINE, ...s.offline };
+  // Schedule rules used to live on each screen and group; they are now
+  // schedule entries that can target any mix of screens and groups.
+  store.data.schedules ||= [];
+  const entryFromRule = (rule, targets) => ({
+    ...rule, name: store.playlists.find((p) => p.id === rule.playlistId)?.name || 'Scheduled content',
+    targets, createdAt: new Date().toISOString(),
+  });
+  for (const screen of store.screens) {
+    for (const rule of screen.schedule || []) store.schedules.push(entryFromRule(rule, { screenIds: [screen.id], groupIds: [] }));
+    screen.schedule = [];
+  }
+  for (const group of store.groups || []) {
+    for (const rule of group.schedule || []) store.schedules.push(entryFromRule(rule, { screenIds: [], groupIds: [group.id] }));
+    group.schedule = [];
+  }
   for (const screen of store.screens) {
     // v1 screens had one token baked into their add-on; it keeps working as the
     // (unencrypted) preview token so nothing breaks during the upgrade.
@@ -159,14 +174,14 @@ export async function createApp({
   app.use(express.json({ limit: '1mb' }));
 
   const screenView = (s) => {
-    const rule = activeRule(s, new Date(), store.groups);
+    const rule = activeRule(s, new Date(), store);
     return {
       ...pick(s, ['id', 'name', 'location', 'notes', 'timezone', 'serverUrl', 'defaultPlaylistId', 'schedule', 'groupIds', 'lastSeen', 'createdAt', 'screenshotAt']),
       offline: s.offline || { mode: 'default' },
       settings: { ...DEFAULT_SETTINGS, ...s.settings },
       paired: Boolean(s.device),
       device: s.device ? { pairedAt: s.device.pairedAt, userAgent: s.device.userAgent } : null,
-      activePlaylistId: resolvePlaylistId(s, new Date(), store.groups),
+      activePlaylistId: resolvePlaylistId(s, new Date(), store),
       upcoming: upcomingChanges(s),
       activeRuleId: rule?.id || null,
       activeGroup: rule?.group || null,
@@ -180,8 +195,9 @@ export async function createApp({
   // The next few scheduled playlist changes, for the console.
   const upcomingChanges = (screen, count = 3) => {
     const now = Date.now();
-    const { segments } = scheduleTimeline(screen, store.groups, now);
-    return segments.filter((seg) => seg.from > now).slice(0, count).map((seg) => ({
+    const { segments } = scheduleTimeline(screen, store, now);
+    const changes = segments.filter((seg, i) => i === 0 || seg.playlistId !== segments[i - 1].playlistId);
+    return changes.filter((seg) => seg.from > now).slice(0, count).map((seg) => ({
       at: new Date(seg.from).toISOString(),
       playlistId: seg.playlistId,
       playlistName: store.playlists.find((p) => p.id === seg.playlistId)?.name || null,
@@ -317,6 +333,7 @@ export async function createApp({
     fingerprint: keys.fingerprint,
     addonVersion: ADDON_VERSION,
     agentVersion: agentVersion(),
+    signageOsUrl: process.env.SIGNAGE_OS_URL || 'https://github.com/captainpawpaw/Signage/releases/latest',
     extensionId: addonId(keys),
     candidates: candidates(),
     updateUrl: `${updateBase()}/addon/updates.xml`,
@@ -401,6 +418,7 @@ export async function createApp({
     store.save();
     hub.disconnect(screen.id);
     fs.rmSync(path.join(screenshotsDir, `${screen.id}.jpg`), { force: true });
+    for (const e of store.schedules) e.targets.screenIds = e.targets.screenIds.filter((x) => x !== screen.id);
     res.json({ ok: true });
   });
 
@@ -537,6 +555,7 @@ export async function createApp({
     const group = findOr404(store.groups, req.params.id, 'Group');
     store.data.groups = store.groups.filter((g) => g !== group);
     for (const s of store.screens) s.groupIds = s.groupIds.filter((g) => g !== group.id);
+    for (const e of store.schedules) e.targets.groupIds = e.targets.groupIds.filter((x) => x !== group.id);
     changed();
     res.json({ ok: true });
   });
@@ -676,8 +695,100 @@ export async function createApp({
       if (s.defaultPlaylistId === playlist.id) s.defaultPlaylistId = null;
       s.schedule = (s.schedule || []).filter((r) => r.playlistId !== playlist.id);
     }
+    store.data.schedules = store.schedules.filter((e) => e.playlistId !== playlist.id);
     changed();
     res.json({ ok: true });
+  });
+
+  // ---- Schedule: content aimed at any mix of screens and groups ----
+  // Content is either an existing playlist or media picked directly; the latter
+  // is kept as a hidden playlist owned by the entry.
+  function scheduleView(e) {
+    const pl = store.playlists.find((p) => p.id === e.playlistId);
+    return {
+      ...e,
+      content: pl?.hidden
+        ? { type: 'media', items: pl.items, seconds: pl.defaultDuration, name: pl.name }
+        : { type: 'playlist', playlistId: e.playlistId, name: pl?.name || null },
+    };
+  }
+
+  function cleanEntry(b, existing = null) {
+    const targets = {
+      screenIds: [...new Set(Array.isArray(b.targets?.screenIds) ? b.targets.screenIds : [])].filter((sid) => store.screens.some((x) => x.id === sid)),
+      groupIds: [...new Set(Array.isArray(b.targets?.groupIds) ? b.targets.groupIds : [])].filter((gid) => store.groups.some((g) => g.id === gid)),
+    };
+    if (!targets.screenIds.length && !targets.groupIds.length) throw new HttpError(400, 'Choose at least one screen or group');
+    const entryId = existing?.id || id();
+    const owned = existing && store.playlists.find((p) => p.id === existing.playlistId && p.hidden);
+    let playlistId;
+    if (b.content?.type === 'media') {
+      const items = cleanItems(b.content.items);
+      if (!items.length) throw new HttpError(400, 'Pick at least one media item');
+      const pl = owned || { id: id(), hidden: true, scheduleId: entryId, items: [] };
+      Object.assign(pl, { name: String(b.name || '').trim() || 'Scheduled media', defaultDuration: Math.max(1, Number(b.content.seconds) || 10), items });
+      if (!owned) store.playlists.push(pl);
+      playlistId = pl.id;
+    } else {
+      const pl = store.playlists.find((p) => p.id === b.content?.playlistId && !p.hidden);
+      if (!pl) throw new HttpError(400, 'Choose a playlist');
+      if (owned) store.data.playlists = store.playlists.filter((p) => p !== owned);
+      playlistId = pl.id;
+    }
+    const [timing] = cleanSchedule([{ ...b, playlistId, id: entryId }]);
+    const name = String(b.name || '').trim() || store.playlists.find((p) => p.id === playlistId)?.name || 'Scheduled content';
+    return { ...timing, name: name.slice(0, 80), targets, createdAt: existing?.createdAt || new Date().toISOString() };
+  }
+
+  app.get('/api/schedules', (req, res) => res.json(store.schedules.map(scheduleView)));
+
+  app.post('/api/schedules', (req, res) => {
+    const entry = cleanEntry(req.body || {});
+    store.schedules.push(entry);
+    changed();
+    res.status(201).json(scheduleView(entry));
+  });
+
+  app.put('/api/schedules/:id', (req, res) => {
+    const entry = findOr404(store.schedules, req.params.id, 'Schedule');
+    Object.assign(entry, cleanEntry({ ...scheduleView(entry), ...req.body }, entry));
+    changed();
+    res.json(scheduleView(entry));
+  });
+
+  app.delete('/api/schedules/:id', (req, res) => {
+    const entry = findOr404(store.schedules, req.params.id, 'Schedule');
+    store.data.schedules = store.schedules.filter((e) => e !== entry);
+    store.data.playlists = store.playlists.filter((p) => !(p.hidden && p.id === entry.playlistId));
+    changed();
+    res.json({ ok: true });
+  });
+
+  // Week view: what a screen (or a typical member of a group) will show, per day.
+  app.get('/api/schedule/week', (req, res) => {
+    let subject;
+    if (req.query.screenId) subject = findOr404(store.screens, req.query.screenId, 'Screen');
+    else if (req.query.groupId) {
+      const group = findOr404(store.groups, req.query.groupId, 'Group');
+      subject = { id: `group:${group.id}`, timezone: DEFAULT_TIMEZONE, groupIds: [group.id], defaultPlaylistId: null, schedule: [] };
+    } else throw new HttpError(400, 'screenId or groupId required');
+    const now = Date.now();
+    const dayStarts = localMidnights(subject.timezone || DEFAULT_TIMEZONE, now, 7);
+    const { segments } = scheduleTimeline(subject, store, dayStarts[0] - 86400_000, 9);
+    const end = dayStarts[dayStarts.length - 1];
+    const names = new Map(store.playlists.map((p) => [p.id, p.name]));
+    const entries = new Map(store.schedules.map((e) => [e.id, e.name]));
+    const blocks = [];
+    segments.forEach((seg, i) => {
+      const from = Math.max(seg.from, dayStarts[0]);
+      const to = Math.min(segments[i + 1]?.from ?? end, end);
+      if (to <= from) return;
+      blocks.push({
+        from, to, playlistId: seg.playlistId, playlistName: names.get(seg.playlistId) || null,
+        scheduleId: seg.ruleId, scheduleName: seg.ruleId ? entries.get(seg.ruleId) || 'Rule' : null,
+      });
+    });
+    res.json({ timezone: subject.timezone || DEFAULT_TIMEZONE, now, dayStarts, blocks, defaultPlaylistId: defaultPlaylistId(subject, store) });
   });
 
   // ---- Static UIs ----

@@ -1,0 +1,21 @@
+[Unit]
+Description=Signage OS first start (finds the setup file, installs the player)
+ConditionPathExists=!/etc/signage-agent/config.json
+After=local-fs.target NetworkManager.service systemd-user-sessions.service
+Wants=NetworkManager.service
+Conflicts=getty@tty1.service
+Before=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/signage-firstboot
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

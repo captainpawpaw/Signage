@@ -1,0 +1,121 @@
+# Builds the Signage OS images (PC and Raspberry Pi), boot-tests the PC image
+# against a real Signage server in QEMU, and publishes both as a GitHub
+# release. The console's "Signage OS" link points at the latest release.
+#
+# Run it from the Actions tab (Run workflow), or push a tag like os-2026.10.20.
+name: Signage OS images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (empty = os-YYYY.MM.DD)
+        required: false
+  push:
+    tags: ['os-*']
+
+permissions:
+  contents: write
+
+jobs:
+  pc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap gdisk dosfstools mtools parted xz-utils socat \
+            qemu-system-x86 qemu-utils ovmf
+          # Let QEMU use KVM.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+      - name: Build
+        run: sudo os/pc/build.sh "$PWD/out"
+      - name: Boot test (BIOS)
+        run: sudo -E PATH="$PATH" os/test/boot-test.sh out/signage-os-pc.img bios disk
+      - name: Boot test (UEFI, install from USB stick to disk)
+        run: sudo -E PATH="$PATH" os/test/boot-test.sh out/signage-os-pc.img uefi install
+      - name: Compress
+        run: |
+          sudo chown -R "$USER" out
+          xz -T0 -6 out/signage-os-pc.img
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signage-os-pc
+          path: out/signage-os-pc.img.xz
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-test-screenshots
+          path: out/*.ppm
+          if-no-files-found: ignore
+
+  pi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y parted e2fsprogs mtools xz-utils qemu-user-static binfmt-support
+      - name: Raspberry Pi OS Lite (64-bit)
+        run: |
+          curl -fsSL -o raspios.img.xz https://downloads.raspberrypi.com/raspios_lite_arm64_latest
+          xz -d raspios.img.xz
+      - name: Build
+        run: sudo os/pi/build.sh raspios.img "$PWD/out"
+      - name: Compress
+        run: |
+          sudo chown -R "$USER" out
+          xz -T0 -6 out/signage-os-pi.img
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signage-os-pi
+          path: out/signage-os-pi.img.xz
+          compression-level: 0
+
+  release:
+    needs: [pc, pi]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: signage-os-*
+          merge-multiple: true
+      - name: Checksums
+        run: sha256sum signage-os-*.img.xz > SHA256SUMS
+      - name: Tag
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in os-*) ;; *) TAG="os-$(date -u +%Y.%m.%d)" ;; esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Signage OS ${{ steps.tag.outputs.tag }}
+          make_latest: true
+          files: |
+            signage-os-pc.img.xz
+            signage-os-pi.img.xz
+            SHA256SUMS
+          body: |
+            Ready-to-flash Signage OS: everything a screen needs is built in.
+
+            | Download | For |
+            | --- | --- |
+            | `signage-os-pi.img.xz` | Raspberry Pi 3, 4, 5, 400, 500, Zero 2 W |
+            | `signage-os-pc.img.xz` | 64-bit PCs: old workstations, thin clients, laptops, mini PCs (BIOS or UEFI, Secure Boot works) |
+
+            1. Write the image to an SD card or USB stick with Raspberry Pi Imager or balenaEtcher (no need to unpack it).
+            2. Copy `signage-linux-setup.sh` from your Signage console (Install add-on) onto the stick's SIGNAGE drive. Wi-Fi: fill in `wifi.txt` there. Servers called `signage.local` on the same network are found without the file.
+            3. Start the screen from it and pair the code it shows. PCs offer to install Signage OS on their internal disk.

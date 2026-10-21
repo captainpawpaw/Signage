@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Installs Signage OS (PC) onto a disk: GPT with a BIOS boot partition, the
+# SIGNAGE EFI system partition and the root file system. Boots on both BIOS
+# (GRUB) and UEFI (Secure Boot capable: shim + Debian's signed GRUB and kernel).
+#
+#   signage-install-disk DISK SOURCE [ROOT_SIZE]
+#     DISK       whole disk (or loop device) to erase
+#     SOURCE     root of the system to copy: "/" on a running Signage OS,
+#                the build tree when making an image
+#     ROOT_SIZE  root partition size for sgdisk (e.g. +3G); default: rest of disk
+#
+# Used by the image build and by the first-start installer (USB stick to
+# internal disk). Every install gets new file system IDs, so the stick and
+# the disk never get mixed up.
+set -euo pipefail
+export MTOOLS_SKIP_CHECK=1
+
+DISK=$1
+SOURCE=$2
+[ "$SOURCE" = / ] || SOURCE=${SOURCE%/}
+ROOT_SIZE=${3:-0}
+MNT=$(mktemp -d)
+
+part() { case "$DISK" in *[0-9]) echo "${DISK}p$1" ;; *) echo "$DISK$1" ;; esac; }
+
+cleanup() {
+  for m in dev/pts dev proc sys boot/efi ""; do mountpoint -q "$MNT/$m" && umount "$MNT/$m"; done
+  rmdir "$MNT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+echo "Partitioning $DISK"
+wipefs -aq "$DISK" || true
+sgdisk -Z "$DISK" >/dev/null 2>&1 || true
+sgdisk -n1:2048:+1M -t1:ef02 -c1:bios \
+       -n2:0:+256M -t2:ef00 -c2:SIGNAGE \
+       -n3:0:"$ROOT_SIZE" -t3:8300 -c3:signage-root "$DISK"
+partprobe "$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || true
+for _ in $(seq 20); do
+  [ -b "$(part 3)" ] && break
+  partx -u "$DISK" 2>/dev/null || partx -a "$DISK" 2>/dev/null || true
+  sleep 0.5
+done
+
+mkfs.vfat -F 32 -n SIGNAGE "$(part 2)" >/dev/null
+mkfs.ext4 -q -F -L signage-root "$(part 3)"
+ROOT_UUID=$(blkid -s UUID -o value "$(part 3)")
+ESP_UUID=$(blkid -s UUID -o value "$(part 2)")
+
+echo "Copying the system"
+mount "$(part 3)" "$MNT"
+mkdir -p "$MNT/boot/efi"
+# Build machines without FAT support (containers) fill the ESP with mtools at the end.
+ESP_MOUNTED=1
+mount "$(part 2)" "$MNT/boot/efi" 2>/dev/null || ESP_MOUNTED=""
+# One file system only: /proc, /sys, /dev, /run and /boot/efi are not copied.
+# tar exits 1 for "file changed as we read it" on a running system: harmless.
+{ tar -C "$SOURCE" --one-file-system --numeric-owner --xattrs --acls -cpf - \
+    --exclude=./boot/efi --exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run \
+    --exclude=./tmp/* --exclude=./var/tmp/* \
+    --exclude=./var/lib/signage-os/firstboot.log --exclude=./lost+found . \
+  || [ $? = 1 ]; } | tar -C "$MNT" --numeric-owner --xattrs --xattrs-include='*' --acls -xpf -
+mkdir -p "$MNT"/{proc,sys,dev,run,tmp,boot/efi}
+chmod 1777 "$MNT/tmp"
+if [ -d "$SOURCE/boot/efi" ] && [ "$(ls -A "$SOURCE/boot/efi")" ]; then
+  # Setup file and wifi.txt from the stick come along; boot files are rewritten below.
+  cp -r "$SOURCE/boot/efi/." "$MNT/boot/efi/"
+fi
+
+cat > "$MNT/etc/fstab" <<EOF
+UUID=$ROOT_UUID  /          ext4  errors=remount-ro,noatime  0 1
+UUID=$ESP_UUID   /boot/efi  vfat  umask=0077,nofail          0 2
+EOF
+
+mkdir -p "$MNT/boot/grub"
+cat > "$MNT/boot/grub/grub.cfg" <<EOF
+set default=0
+set timeout_style=hidden
+set timeout=1
+insmod part_gpt
+insmod ext2
+search --no-floppy --fs-uuid --set=root $ROOT_UUID
+menuentry "Signage OS" {
+  linux /vmlinuz root=UUID=$ROOT_UUID ro quiet loglevel=3 consoleblank=0 fbcon=font:TER16x32 console=ttyS0,115200 console=tty1
+  initrd /initrd.img
+}
+menuentry "Signage OS (troubleshooting)" {
+  linux /vmlinuz root=UUID=$ROOT_UUID ro consoleblank=0 systemd.unit=multi-user.target
+  initrd /initrd.img
+}
+EOF
+
+echo "Installing the boot loaders"
+for m in dev dev/pts proc sys; do mount --bind "/$m" "$MNT/$m"; done
+chroot "$MNT" grub-install --target=i386-pc --boot-directory=/boot --modules="part_gpt ext2" "$DISK"
+
+EFI="$MNT/boot/efi/EFI"
+rm -rf "$EFI/BOOT" "$EFI/debian"
+mkdir -p "$EFI/BOOT" "$EFI/debian"
+cp "$MNT/usr/lib/shim/shimx64.efi.signed" "$EFI/BOOT/BOOTX64.EFI"
+cp "$MNT/usr/lib/shim/mmx64.efi.signed" "$EFI/BOOT/mmx64.efi"
+cp "$MNT/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed" "$EFI/BOOT/grubx64.efi"
+for d in BOOT debian; do
+  cat > "$EFI/$d/grub.cfg" <<EOF
+search --no-floppy --fs-uuid --set=root $ROOT_UUID
+set prefix=(\$root)/boot/grub
+configfile \$prefix/grub.cfg
+EOF
+done
+if [ -z "$ESP_MOUNTED" ]; then
+  mcopy -s -Q -i "$(part 2)" "$MNT/boot/efi"/* ::
+  rm -rf "${MNT:?}/boot/efi"/*
+fi
+sync
+echo "Installed on $DISK"

@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const EMPTY = () => ({ settings: {}, screens: [], groups: [], media: [], playlists: [], fileKeys: {} });
+const EMPTY = () => ({ settings: {}, screens: [], groups: [], schedules: [], media: [], playlists: [], fileKeys: {} });
 
 export class Store {
   constructor(file) {
@@ -19,6 +19,7 @@ export class Store {
   get media() { return this.data.media; }
   get playlists() { return this.data.playlists; }
   get groups() { return this.data.groups; }
+  get schedules() { return this.data.schedules; }
   get fileKeys() { return this.data.fileKeys; }
 
   save() {

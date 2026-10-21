@@ -43,7 +43,7 @@ jobs:
         run: sudo -E PATH="$PATH" os/test/boot-test.sh out/signage-os-pc.img uefi install
       - name: Compress
         run: |
-          sudo chown -R "$USER" out
+          sudo chown -R "$(id -u):$(id -g)" out
           xz -T0 -6 out/signage-os-pc.img
       - uses: actions/upload-artifact@v4
         with:
@@ -74,7 +74,7 @@ jobs:
         run: sudo os/pi/build.sh raspios.img "$PWD/out"
       - name: Compress
         run: |
-          sudo chown -R "$USER" out
+          sudo chown -R "$(id -u):$(id -g)" out
           xz -T0 -6 out/signage-os-pi.img
       - uses: actions/upload-artifact@v4
         with:

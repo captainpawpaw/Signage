@@ -82,7 +82,19 @@ export function effectiveRules(screen, ctx = []) {
   return [...own, ...direct, ...viaGroup, ...inherited];
 }
 
+// "Play now": content an admin put on a screen by hand, until a set time or
+// until stopped. It beats every schedule rule while it lasts.
+//   screen.override = { playlistId, from: epoch ms, until: epoch ms | null }
+export const OVERRIDE_RULE_ID = 'play-now';
+
+export function activeOverride(screen, t = Date.now()) {
+  const o = screen.override;
+  return o?.playlistId && t >= (o.from || 0) && (!o.until || t < o.until) ? o : null;
+}
+
 export function activeRule(screen, now = new Date(), ctx = []) {
+  const o = activeOverride(screen, now.getTime());
+  if (o) return { id: OVERRIDE_RULE_ID, name: 'Play now', playlistId: o.playlistId, until: o.until || null, priority: Infinity, group: null };
   const parts = localParts(now, screen.timezone || DEFAULT_TIMEZONE);
   let best = null;
   for (const rule of effectiveRules(screen, ctx)) {
@@ -142,6 +154,25 @@ const timelineCache = new Map();
 // Minute-by-minute evaluation over the window, using a zone offset refreshed
 // every 15 minutes (DST changes happen on those boundaries). Cached per day.
 export function scheduleTimeline(screen, ctx = [], now = Date.now(), days = TIMELINE_DAYS) {
+  return withOverride(baseTimeline(screen, ctx, now, days), screen.override);
+}
+
+function withOverride(result, o) {
+  if (!o?.playlistId) return result;
+  const from = Math.max(o.from || 0, result.start);
+  const until = o.until ? Math.min(o.until, result.end) : result.end;
+  if (until <= from) return result;
+  const segments = result.segments.filter((seg) => seg.from < from);
+  segments.push({ from, playlistId: o.playlistId, ruleId: OVERRIDE_RULE_ID });
+  if (until < result.end) {
+    const resume = [...result.segments].reverse().find((seg) => seg.from <= until);
+    segments.push({ from: until, playlistId: resume.playlistId, ruleId: resume.ruleId });
+    segments.push(...result.segments.filter((seg) => seg.from > until));
+  }
+  return { ...result, segments };
+}
+
+function baseTimeline(screen, ctx, now, days) {
   const timeZone = screen.timezone || DEFAULT_TIMEZONE;
   const rules = effectiveRules(screen, ctx).filter((r) => r.enabled !== false);
   const fallback = defaultPlaylistId(screen, ctx);

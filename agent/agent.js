@@ -151,15 +151,26 @@ const manifestPath = path.join(STATE_DIR, 'manifest.json');
 
 function allEnc(m) {
   const out = new Map();
-  for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items)]) {
+  const logos = Object.values(m.playlists || {}).map((p) => p.overlay?.logo?.image).filter(Boolean);
+  for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items), logos]) {
     for (const it of list) if (it.enc) out.set(it.enc.f, { ...it.enc, mime: it.mime });
   }
   return [...out.values()];
 }
 
 function toLocal(m) {
-  const shape = (items) => items.filter((it) => it.enc && isComplete(it.enc)).map(({ enc, stream, codecs, ...it }) => ({ ...it, url: `/media/${enc.f}`, size: enc.size }));
-  const playlists = Object.fromEntries(Object.entries(m.playlists || {}).map(([id, p]) => [id, { ...p, items: shape(p.items) }]));
+  const local = ({ enc, stream, codecs, ...it }) => ({ ...it, url: `/media/${enc.f}`, size: enc.size });
+  // Live channels stream from their source; the relay is on the server, not here.
+  const shape = (items) => items
+    .filter((it) => it.type === 'live' || (it.enc && isComplete(it.enc)))
+    .map((it) => (it.type === 'live' ? { ...it, relay: serverUrl && it.relay ? serverUrl + it.relay : it.relay } : local(it)));
+  const overlay = (o) => {
+    const image = o?.logo?.image;
+    if (!image) return o;
+    if (image.enc && isComplete(image.enc)) return { ...o, logo: { ...o.logo, image: local(image) } };
+    return o.ticker ? { ticker: o.ticker } : undefined;
+  };
+  const playlists = Object.fromEntries(Object.entries(m.playlists || {}).map(([id, p]) => [id, { ...p, items: shape(p.items), overlay: overlay(p.overlay) }]));
   const body = { ...m, playlists, items: shape(m.items || []) };
   delete body.serverTime;
   const version = crypto.createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 12);

@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.3.0';
+  const PLAYER_VERSION = '2.4.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -24,6 +24,9 @@
   const SCREENSHOT_MS = 5 * 60_000;
   const BUFFER_AHEAD_S = 30;
   const OFFLINE_AFTER_MS = 15_000;
+  const LIVE_STALL_MS = 20_000;      // a live channel whose picture stops this long is restarted
+  const LIVE_RETRY_MS = 15_000;      // wait before trying an unavailable channel again
+  const TICKER_SPEED = { slow: 60, normal: 110, fast: 180 }; // px/s at 1080p
   // Preview links can't use offline storage (plain http), so they keep the
   // playlist in memory instead: all images, and videos up to this budget.
   const MEMORY_BUDGET_MB = { standard: 300, lowPower: 40 };
@@ -163,7 +166,7 @@
   }
 
   // ---------- assets ----------
-  const assetKey = (item) => (item.enc ? item.enc.f : item.url);
+  const assetKey = (item) => (item.enc ? item.enc.f : item.type === 'live' ? `live:${item.url}` : item.url);
   const MediaSourceImpl = self.ManagedMediaSource || self.MediaSource;
   const canStream = (item) => Boolean(item.stream && item.enc && MediaSourceImpl?.isTypeSupported?.(`video/mp4; codecs="${item.codecs}"`));
 
@@ -179,7 +182,9 @@
   async function prepare(item) {
     const key = assetKey(item);
     if (assets.has(key)) return;
-    if (!item.enc && LOCAL) {
+    if (item.type === 'live') {
+      assets.set(key, 'live'); // nothing to download ahead: it streams while on screen
+    } else if (!item.enc && LOCAL) {
       // Everything is already on this device's disk: play it from there.
       const url = `${serverUrl}${item.url}?pt=${encodeURIComponent(previewToken)}`;
       if (item.type === 'image') await preloadImage(url);
@@ -248,7 +253,8 @@
   // Every item the manifest might need: all playlists the schedule switches to.
   function allItems(m) {
     const seen = new Map();
-    for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items)]) {
+    const logos = Object.values(m.playlists || {}).map((p) => p.overlay?.logo?.image).filter(Boolean);
+    for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items), logos]) {
       for (const item of list) if (!seen.has(assetKey(item))) seen.set(assetKey(item), item);
     }
     return [...seen.values()];
@@ -319,6 +325,7 @@
     if (!manifest) return;
     const id = scheduledPlaylistId(manifest);
     const items = itemsOf(manifest, id);
+    applyOverlay(manifest.playlists?.[id]?.overlay || null);
     const same = id === activeId && items.map((i) => i.id).join() === activeItems.map((i) => i.id).join();
     if (same && (activeItems.length || !force)) { activeItems = items; return; }
     activeId = id;
@@ -403,7 +410,25 @@
     };
 
     stopLayer(layer);
-    if (item.type === 'video') {
+    if (item.type === 'live') {
+      el = document.createElement('video');
+      el.muted = item.muted !== false;
+      el.playsInline = true;
+      el.addEventListener('playing', () => { if (layer.dataset.itemId === item.id && !layer.classList.contains('active')) reveal(); });
+      el.addEventListener('canplay', () => {
+        el.play().catch(() => { el.muted = true; el.play().catch(() => {}); }); // sound can be blocked: play muted rather than not at all
+      });
+      playLive(el, item, (err) => {
+        if (failed) return;
+        failed = true;
+        console.warn('[signage] channel unavailable', item.name, err);
+        clearTimeout(advanceTimer);
+        if (activeItems.length > 1) { advanceTimer = setTimeout(advance, 1000); return; }
+        showIdle('Channel unavailable', { title: item.name, hint: 'Trying again…' });
+        advanceTimer = setTimeout(() => { index = -1; advance(); }, LIVE_RETRY_MS);
+      });
+      if (item.duration) advanceTimer = setTimeout(advance, item.duration);
+    } else if (item.type === 'video') {
       el = document.createElement('video');
       el.muted = item.muted !== false;
       el.playsInline = true;
@@ -427,6 +452,126 @@
     el.alt = '';
     layer.dataset.itemId = item.id;
     layer.append(el);
+  }
+
+  // ---------- live channels ----------
+  // Stream libraries ship with the player and load the first time a channel plays.
+  const libs = new Map();
+  function loadLib(file, global) {
+    if (!libs.has(file)) {
+      libs.set(file, new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = file;
+        script.onload = () => (self[global] ? resolve(self[global]) : reject(new Error(`${file} did not load`)));
+        script.onerror = () => { libs.delete(file); reject(new Error(`${file} did not load`)); };
+        document.head.append(script);
+      }));
+    }
+    return libs.get(file);
+  }
+
+  // Plays a channel from its source; if that fails (blocked by the browser,
+  // unreachable), through the server's relay. onFail when neither works.
+  function playLive(video, item, onFail) {
+    const relay = item.relay && (/^https?:/.test(item.relay) ? item.relay : `${serverUrl}${item.relay}`);
+    const sources = item.relayOnly ? [relay] : [item.url, relay].filter(Boolean);
+    let attempt = -1;
+    let engine = null;
+    let watchdog = null;
+    let stopped = false;
+    const teardown = () => {
+      clearInterval(watchdog);
+      try { engine?.destroy(); } catch {}
+      engine = null;
+    };
+    video._stop = () => { stopped = true; teardown(); };
+    const next = (err) => {
+      if (stopped) return;
+      teardown();
+      attempt += 1;
+      if (attempt >= sources.length) { onFail(err); return; }
+      start(sources[attempt]).catch(next);
+    };
+    video.addEventListener('error', () => next(video.error));
+    // A live picture that freezes without an error (dropped connection) counts as a failure.
+    const watch = () => {
+      let last = -1;
+      let since = Date.now();
+      watchdog = setInterval(() => {
+        if (video.currentTime !== last) { last = video.currentTime; since = Date.now(); return; }
+        if (Date.now() - since > LIVE_STALL_MS) { attempt = -1; next(new Error('stalled')); }
+      }, 2000);
+    };
+    async function start(src) {
+      if (item.format === 'hls') {
+        const Hls = await loadLib('hls.min.js', 'Hls');
+        if (Hls.isSupported()) {
+          // The add-on's security policy doesn't allow blob workers: decode on the page there.
+          const hls = new Hls({ backBufferLength: 30, liveDurationInfinity: true, lowLatencyMode: true, enableWorker: MODE !== 'device' });
+          let recovered = false;
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            if (!data.fatal) return;
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) { recovered = true; hls.recoverMediaError(); return; }
+            next(new Error(`HLS ${data.details}`));
+          });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          engine = hls;
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src; // Safari / iOS play HLS themselves
+        } else throw new Error('HLS is not supported here');
+      } else if (item.format === 'ts') {
+        const mpegts = await loadLib('mpegts.js', 'mpegts');
+        if (!mpegts.getFeatureList().mseLivePlayback) throw new Error('MPEG-TS is not supported here');
+        const player = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: src }, { enableStashBuffer: false, liveBufferLatencyChasing: true });
+        player.on(mpegts.Events.ERROR, (type, detail) => next(new Error(`MPEG-TS ${type} ${detail}`)));
+        player.attachMediaElement(video);
+        player.load();
+        engine = player;
+      } else {
+        video.src = src;
+      }
+      watch();
+    }
+    next();
+  }
+
+  // Ticker and logo of the playlist on screen.
+  let overlayKey = null;
+  function applyOverlay(o) {
+    const key = o ? JSON.stringify(o) : null;
+    if (key === overlayKey) return;
+    overlayKey = key;
+    const box = $('#overlay');
+    box.replaceChildren();
+    box.hidden = !o;
+    if (!o) return;
+    let tickerHeight = 0;
+    if (o.ticker?.text) {
+      const t = o.ticker;
+      const bar = document.createElement('div');
+      bar.className = `ticker ${t.position} ${t.size}`;
+      bar.style.background = t.background;
+      bar.style.color = t.color;
+      const span = document.createElement('span');
+      span.textContent = t.text.split(/\n+/).map((x) => x.trim()).filter(Boolean).join('     •     ');
+      bar.append(span);
+      box.append(bar);
+      // Same speed on every screen size: scale with the stage height.
+      const pxPerSec = (TICKER_SPEED[t.speed] || TICKER_SPEED.normal) * (stage.offsetHeight / 1080 || 1);
+      span.style.setProperty('--duration', `${Math.max(5, span.offsetWidth / pxPerSec)}s`);
+      if (t.position === 'bottom') tickerHeight = bar.offsetHeight;
+    }
+    const src = o.logo && assets.get(assetKey(o.logo.image));
+    if (src) {
+      const img = new Image();
+      img.className = `logo ${o.logo.corner}`;
+      img.style.width = `${o.logo.size}%`;
+      if (tickerHeight && o.logo.corner.startsWith('bottom')) img.style.bottom = `${tickerHeight}px`;
+      img.src = src;
+      img.alt = '';
+      box.append(img);
+    }
   }
 
   // Decrypts chunks into MediaSource as the video plays, keeping ~30 s buffered,
@@ -625,21 +770,31 @@
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = manifest?.settings?.background || '#000';
-      ctx.fillRect(0, 0, w, h);
       const el = $('#idle').hidden ? layers[front].firstElementChild : null;
       const sw = el?.naturalWidth || el?.videoWidth;
       const sh = el?.naturalHeight || el?.videoHeight;
-      if (el && sw && sh) {
-        const scale = (manifest?.settings?.fit === 'cover' ? Math.max : Math.min)(w / sw, h / sh);
-        ctx.drawImage(el, (w - sw * scale) / 2, (h - sh * scale) / 2, sw * scale, sh * scale);
-      } else {
-        ctx.fillStyle = '#fff';
-        ctx.font = '20px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText($('#idle .idle-msg').textContent || 'Idle', w / 2, h / 2);
+      const draw = (text) => {
+        ctx.fillStyle = manifest?.settings?.background || '#000';
+        ctx.fillRect(0, 0, w, h);
+        if (!text && el && sw && sh) {
+          const scale = (manifest?.settings?.fit === 'cover' ? Math.max : Math.min)(w / sw, h / sh);
+          ctx.drawImage(el, (w - sw * scale) / 2, (h - sh * scale) / 2, sw * scale, sh * scale);
+        } else {
+          ctx.fillStyle = '#fff';
+          ctx.font = '20px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(text || $('#idle .idle-msg').textContent || 'Idle', w / 2, h / 2);
+        }
+      };
+      const jpegOf = () => new Promise((resolve, reject) => { try { canvas.toBlob(resolve, 'image/jpeg', 0.75); } catch (err) { reject(err); } });
+      draw();
+      let blob;
+      try { blob = await jpegOf(); } catch {
+        // A live channel from another site can't be copied into a picture: say what is on.
+        const live = activeItems[index];
+        draw(live?.type === 'live' ? `Live: ${live.name}` : 'Playing');
+        blob = await jpegOf();
       }
-      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.75));
       const jpeg = new Uint8Array(await blob.arrayBuffer());
       if (MODE === 'device') {
         const iv = crypto.getRandomValues(new Uint8Array(12));

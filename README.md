@@ -61,6 +61,34 @@ fullscreen.
     screen stays offline longer than that, the weekly pattern repeats.
   - **Up next.** Each screen card in the console shows the next scheduled
     change.
+- **Live TV (IPTV), the Channels section.** Add stream links one by one, or
+  import an IPTV provider's channel list (.m3u, from a link or pasted). Names,
+  groups and logos come with it, and you can pick which groups to import.
+  - **Formats:** HLS (`.m3u8`), MPEG-TS over HTTP (the bare
+    `http://host:port/user/pass/123` links in most IPTV lists) and video file
+    links. The player libraries ship with every player, so nothing loads from
+    the internet.
+  - **Use them like media:** add channels to playlists (alone they play
+    non-stop; next to other items they take turns, 5 minutes unless set) and
+    to the Schedule, e.g. news on the canteen screens 12:00–13:00.
+  - **Play now:** put a channel (or any media or playlist) on chosen screens or
+    groups straight away, for 15 minutes up to "until I stop it". It beats the
+    schedule while it lasts, and the screen card shows it with a **Stop**
+    button. Screens switch back by themselves when it ends, even offline.
+  - **Ticker and logo:** any playlist can show a scrolling ticker (one message
+    per line; position, speed, size and colours) and a logo in a corner, for
+    example over a TV channel.
+  - **Relay:** screens play streams straight from the source. If a browser
+    can't open one (many providers block browsers, or plain http under an
+    https page), the screen plays it through the server instead. The server
+    only fetches addresses it handed out itself (each is signed), and screens
+    on the same channel share its download. A channel can be set to always
+    use the relay, for example when the provider only accepts the server's
+    address.
+  - A channel that can't be reached shows "Channel unavailable" and is tried
+    again every 15 seconds; in a playlist with other items it is skipped.
+  - Live streams aren't end-to-end encrypted the way uploaded media is: they
+    come from the provider as they are. Channels can't play offline.
 - **Groups.** Put screens into groups such as "Ground floor" or "Canteen". A
   group can have its own default playlist and schedule. You can also send a
   command to every screen in a group at once: Identify, Screenshots or Reload.
@@ -321,6 +349,7 @@ server/
   network.js     mDNS announcer and the list of addresses screens should try
   schedule.js    which playlist a screen shows right now (own + group rules)
   manifest.js    playlist → items; plain URLs (previews) or encrypted refs (devices)
+  live.js        TV channels: M3U import, stream formats, the signed relay
   extension.js   builds the add-on (Chrome/Edge, Firefox, CRX, screen-PC installer)
   convert.js     PDF/PowerPoint → slides, video → streamable MP4
   store.js       JSON-file datastore

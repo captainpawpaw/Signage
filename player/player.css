@@ -49,3 +49,20 @@ html, body {
 #offline.fullscreen .offline-status { justify-content: center; }
 #offline .offline-dot { width: 1em; height: 1em; max-width: 1.4vmin; max-height: 1.4vmin; border-radius: 50%; background: #f5a524; animation: offline-pulse 1.6s ease-in-out infinite; }
 @keyframes offline-pulse { 50% { opacity: 0.25; } }
+
+/* Ticker and logo on top of a playlist (live TV or any content). */
+#overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+#overlay[hidden] { display: none; }
+#overlay .logo { position: absolute; height: auto; margin: 2.5vmin; }
+#overlay .logo.top-left { top: 0; left: 0; }
+#overlay .logo.top-right { top: 0; right: 0; }
+#overlay .logo.bottom-left { bottom: 0; left: 0; }
+#overlay .logo.bottom-right { bottom: 0; right: 0; }
+#overlay .ticker { position: absolute; left: 0; right: 0; overflow: hidden; white-space: nowrap; font-weight: 600; padding: 0.35em 0; }
+#overlay .ticker.bottom { bottom: 0; }
+#overlay .ticker.top { top: 0; }
+#overlay .ticker.small { font-size: 2.6vmin; }
+#overlay .ticker.medium { font-size: 3.6vmin; }
+#overlay .ticker.large { font-size: 5vmin; }
+#overlay .ticker span { display: inline-block; padding-left: 100%; animation: ticker var(--duration, 20s) linear infinite; will-change: transform; }
+@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-100%); } }

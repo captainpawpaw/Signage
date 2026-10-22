@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Hub } from './realtime.js';
 import { buildManifest, forPlayer, DEFAULT_SETTINGS } from './manifest.js';
-import { activeRule, resolvePlaylistId, scheduleTimeline, localMidnights, defaultPlaylistId, DEFAULT_TIMEZONE } from './schedule.js';
+import { activeRule, activeOverride, resolvePlaylistId, scheduleTimeline, localMidnights, defaultPlaylistId, DEFAULT_TIMEZONE, OVERRIDE_RULE_ID } from './schedule.js';
+import { createRelay, parseM3u, cleanStreamUrl, streamFormat, PLAYER_VENDOR } from './live.js';
 import { ADDON_VERSION, addonId, addonConfig, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
 import { agentVersion, buildAgentPackage, buildLinuxSetup } from './linux.js';
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
@@ -24,6 +25,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 2048) * 1024 * 1024;
+const MAX_CHANNELS_PER_IMPORT = 5000;
 const COMMANDS = ['reload', 'identify', 'next', 'screenshot'];
 const id = () => crypto.randomUUID();
 
@@ -62,6 +64,33 @@ function cleanSchedule(rules = []) {
   })).filter((r) => r.playlistId);
 }
 
+const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+function cleanOverlay(o, store) {
+  if (!o || typeof o !== 'object') return null;
+  const color = (c, fallback) => (/^#[0-9a-f]{3,8}$/i.test(c || '') ? c : fallback);
+  const out = {};
+  const text = typeof o.ticker?.text === 'string' ? o.ticker.text.trim().slice(0, 2000) : '';
+  if (text) {
+    out.ticker = {
+      text,
+      position: o.ticker.position === 'top' ? 'top' : 'bottom',
+      speed: ['slow', 'normal', 'fast'].includes(o.ticker.speed) ? o.ticker.speed : 'normal',
+      size: ['small', 'medium', 'large'].includes(o.ticker.size) ? o.ticker.size : 'medium',
+      color: color(o.ticker.color, '#ffffff'),
+      background: color(o.ticker.background, '#000000cc'),
+    };
+  }
+  const logo = o.logo?.mediaId && store.media.find((m) => m.id === o.logo.mediaId && m.type === 'image');
+  if (logo) {
+    out.logo = {
+      mediaId: logo.id,
+      corner: CORNERS.includes(o.logo.corner) ? o.logo.corner : 'top-right',
+      size: Math.min(40, Math.max(3, Number(o.logo.size) || 12)), // % of the screen width
+    };
+  }
+  return out.ticker || out.logo ? out : null;
+}
+
 function validTimezone(tz) {
   if (typeof tz !== 'string' || !tz) return false;
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
@@ -88,6 +117,7 @@ function migrate(store) {
   s.serverName ||= 'Signage';
   if (s.allowPlaintext === undefined) s.allowPlaintext = true;
   s.offline = { ...DEFAULT_OFFLINE, ...s.offline };
+  s.relaySecret ||= crypto.randomBytes(32).toString('base64url');
   // Schedule rules used to live on each screen and group; they are now
   // schedule entries that can target any mix of screens and groups.
   store.data.schedules ||= [];
@@ -185,6 +215,12 @@ export async function createApp({
       upcoming: upcomingChanges(s),
       activeRuleId: rule?.id || null,
       activeGroup: rule?.group || null,
+      playNow: (() => {
+        const o = activeOverride(s);
+        if (!o) return null;
+        const pl = store.playlists.find((p) => p.id === o.playlistId);
+        return { playlistId: o.playlistId, name: pl?.name || 'Play now', from: o.from, until: o.until || null };
+      })(),
       status: hub.status(s.id),
     };
   };
@@ -211,7 +247,7 @@ export async function createApp({
   const changed = () => { store.save(); hub.refresh(); };
 
   // Players and screen PCs call these from other origins (the add-on, scripts).
-  app.use(['/api/hello', '/api/player', '/files', '/addon', '/agent'], (req, res, next) => {
+  app.use(['/api/hello', '/api/player', '/files', '/addon', '/agent', '/live'], (req, res, next) => {
     res.set({
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Authorization, X-Signage-Session',
@@ -222,6 +258,14 @@ export async function createApp({
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
+
+  // Live channels through this server, for streams screens can't open directly.
+  const relay = createRelay(store.settings.relaySecret, { log });
+  app.get('/live/:channelId/:sig', (req, res) => relay.handle(req, res, store.media.find((m) => m.id === req.params.channelId && m.type === 'stream')));
+  // Stream player libraries, shipped next to the player.
+  for (const [name, file] of Object.entries(PLAYER_VENDOR)) {
+    app.get(`/player/${name}`, (req, res) => res.set('Cache-Control', 'no-cache').type('js').sendFile(file));
+  }
 
   // ---- Admin session ----
   app.post('/api/login', (req, res) => {
@@ -419,6 +463,8 @@ export async function createApp({
     hub.disconnect(screen.id);
     fs.rmSync(path.join(screenshotsDir, `${screen.id}.jpg`), { force: true });
     for (const e of store.schedules) e.targets.screenIds = e.targets.screenIds.filter((x) => x !== screen.id);
+    dropUnusedPlayNow();
+    store.save();
     res.json({ ok: true });
   });
 
@@ -656,6 +702,87 @@ export async function createApp({
     res.json({ ok: true });
   });
 
+  // Live TV channels: stored as media of type "stream", so playlists, the
+  // schedule and Play now treat them like any other media.
+  const channelFields = (b, existing = {}) => {
+    const url = b.url !== undefined ? cleanStreamUrl(b.url) : existing.url;
+    if (!url) throw new HttpError(400, 'Enter a stream address starting with http:// or https://');
+    const name = String(b.name ?? existing.name ?? '').trim() || url.split('/').pop() || 'Channel';
+    return {
+      name: name.slice(0, 120), url,
+      logo: b.logo !== undefined ? cleanStreamUrl(b.logo) || '' : existing.logo || '',
+      group: String(b.group ?? existing.group ?? '').trim().slice(0, 80),
+      relay: (b.relay ?? existing.relay) === 'always' ? 'always' : 'auto',
+      format: streamFormat(url),
+    };
+  };
+  const newChannel = (fields) => ({ id: id(), type: 'stream', status: 'ready', size: 0, ...fields, createdAt: new Date().toISOString() });
+
+  app.post('/api/channels', (req, res) => {
+    const channel = newChannel(channelFields(req.body || {}));
+    store.media.push(channel);
+    store.save();
+    res.status(201).json(channel);
+  });
+
+  app.put('/api/channels/:id', (req, res) => {
+    const channel = findOr404(store.media.filter((m) => m.type === 'stream'), req.params.id, 'Channel');
+    Object.assign(channel, channelFields(req.body || {}, channel));
+    changed();
+    res.json(channel);
+  });
+
+  // Adds the channels of an IPTV list (.m3u), from a link or pasted text.
+  app.post('/api/channels/import', async (req, res) => {
+    const b = req.body || {};
+    let text = typeof b.text === 'string' ? b.text : '';
+    if (!text && b.url) {
+      const url = cleanStreamUrl(b.url);
+      if (!url) throw new HttpError(400, 'Enter a link starting with http:// or https://');
+      let r;
+      try { r = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30_000) }); } catch (err) { throw new HttpError(502, `Could not download the list: ${err.message}`); }
+      if (!r.ok) throw new HttpError(502, `Could not download the list (HTTP ${r.status})`);
+      text = await r.text();
+    }
+    const found = parseM3u(text);
+    if (!found.length) throw new HttpError(400, 'No channels found. An IPTV list starts with #EXTM3U and has one stream link per channel.');
+    if (b.preview) {
+      // Lets the console show the list's groups before importing.
+      const counts = new Map();
+      for (const ch of found) counts.set(ch.group, (counts.get(ch.group) || 0) + 1);
+      return res.json({ total: found.length, groups: [...counts].map(([name, count]) => ({ name, count })) });
+    }
+    const groups = Array.isArray(b.groups) && b.groups.length ? new Set(b.groups) : null;
+    const known = new Set(store.media.filter((m) => m.type === 'stream').map((m) => m.url));
+    const created = [];
+    for (const ch of found) {
+      if (groups && !groups.has(ch.group)) continue;
+      if (known.has(ch.url)) continue;
+      if (created.length >= MAX_CHANNELS_PER_IMPORT) break;
+      known.add(ch.url);
+      created.push(newChannel(channelFields({ ...ch, group: b.group || ch.group })));
+    }
+    store.media.push(...created);
+    store.save();
+    res.status(201).json({ created: created.length, skipped: found.length - created.length });
+  });
+
+  // For the console's preview of a channel the browser can't open directly.
+  app.get('/api/channels/:id/relay', (req, res) => {
+    const channel = findOr404(store.media.filter((m) => m.type === 'stream'), req.params.id, 'Channel');
+    res.json({ relay: relay.relayUrl(channel.id, channel.url) });
+  });
+
+  app.post('/api/channels/delete', (req, res) => {
+    const ids = new Set(Array.isArray(req.body?.ids) ? req.body.ids : []);
+    const gone = store.media.filter((m) => m.type === 'stream' && ids.has(m.id));
+    const goneIds = new Set(gone.map((m) => m.id));
+    store.data.media = store.media.filter((m) => !goneIds.has(m.id));
+    for (const pl of store.playlists) pl.items = pl.items.filter((it) => !goneIds.has(it.mediaId));
+    changed();
+    res.json({ deleted: gone.length });
+  });
+
   // Playlists
   function cleanItems(items = []) {
     if (!Array.isArray(items)) throw new HttpError(400, 'items must be an array');
@@ -669,7 +796,7 @@ export async function createApp({
   app.post('/api/playlists', (req, res) => {
     const b = req.body || {};
     if (!b.name?.trim()) throw new HttpError(400, 'Name is required');
-    const playlist = { id: id(), name: b.name.trim(), defaultDuration: Math.max(1, Number(b.defaultDuration) || 10), items: cleanItems(b.items) };
+    const playlist = { id: id(), name: b.name.trim(), defaultDuration: Math.max(1, Number(b.defaultDuration) || 10), items: cleanItems(b.items), overlay: cleanOverlay(b.overlay, store) };
     store.playlists.push(playlist);
     changed();
     res.status(201).json(playlist);
@@ -684,6 +811,7 @@ export async function createApp({
     }
     if (b.defaultDuration !== undefined) playlist.defaultDuration = Math.max(1, Number(b.defaultDuration) || 10);
     if (b.items !== undefined) playlist.items = cleanItems(b.items);
+    if (b.overlay !== undefined) playlist.overlay = cleanOverlay(b.overlay, store);
     changed();
     res.json(playlist);
   });
@@ -696,6 +824,7 @@ export async function createApp({
       s.schedule = (s.schedule || []).filter((r) => r.playlistId !== playlist.id);
     }
     store.data.schedules = store.schedules.filter((e) => e.playlistId !== playlist.id);
+    for (const s of store.screens) if (s.override?.playlistId === playlist.id) s.override = null;
     changed();
     res.json({ ok: true });
   });
@@ -785,10 +914,62 @@ export async function createApp({
       if (to <= from) return;
       blocks.push({
         from, to, playlistId: seg.playlistId, playlistName: names.get(seg.playlistId) || null,
-        scheduleId: seg.ruleId, scheduleName: seg.ruleId ? entries.get(seg.ruleId) || 'Rule' : null,
+        scheduleId: seg.ruleId, scheduleName: seg.ruleId === OVERRIDE_RULE_ID ? 'Play now' : seg.ruleId ? entries.get(seg.ruleId) || 'Rule' : null,
       });
     });
     res.json({ timezone: subject.timezone || DEFAULT_TIMEZONE, now, dayStarts, blocks, defaultPlaylistId: defaultPlaylistId(subject, store) });
+  });
+
+  // ---- Play now: put content on screens straight away, ahead of the schedule ----
+  const playNowTargets = (t = {}) => {
+    const ids = new Set(Array.isArray(t.screenIds) ? t.screenIds : []);
+    const groupIds = new Set(Array.isArray(t.groupIds) ? t.groupIds : []);
+    const list = store.screens.filter((x) => ids.has(x.id) || x.groupIds.some((g) => groupIds.has(g)));
+    if (!list.length) throw new HttpError(400, 'Choose at least one screen or group');
+    return list;
+  };
+  // Content picked directly gets a hidden playlist; dropped once no screen uses it.
+  const dropUnusedPlayNow = () => {
+    const used = new Set(store.screens.map((x) => x.override?.playlistId).filter(Boolean));
+    store.data.playlists = store.playlists.filter((p) => !p.playNow || used.has(p.id));
+  };
+
+  app.post('/api/play-now', (req, res) => {
+    const b = req.body || {};
+    const screens = playNowTargets(b.targets);
+    let playlistId;
+    if (b.content?.type === 'media') {
+      const items = cleanItems(b.content.items);
+      if (!items.length) throw new HttpError(400, 'Pick something to play');
+      const first = store.media.find((m) => m.id === items[0].mediaId);
+      const pl = {
+        id: id(), hidden: true, playNow: true, items,
+        name: String(b.name || '').trim().slice(0, 80) || (items.length === 1 ? first.name : `${first.name} + ${items.length - 1} more`),
+        defaultDuration: Math.max(1, Number(b.content.seconds) || 10),
+      };
+      store.playlists.push(pl);
+      playlistId = pl.id;
+    } else {
+      const pl = store.playlists.find((p) => p.id === b.content?.playlistId && !p.hidden);
+      if (!pl) throw new HttpError(400, 'Choose a playlist or a channel');
+      playlistId = pl.id;
+    }
+    const minutes = Number(b.minutes) || 0;
+    const from = Date.now();
+    const until = b.until ? Number(new Date(b.until)) : minutes > 0 ? from + minutes * 60_000 : null;
+    if (until !== null && !(until > from)) throw new HttpError(400, 'The end time must be in the future');
+    for (const screen of screens) screen.override = { playlistId, from, until };
+    dropUnusedPlayNow();
+    changed();
+    res.json({ screens: screens.map(screenView) });
+  });
+
+  app.post('/api/play-now/stop', (req, res) => {
+    const screens = playNowTargets(req.body?.targets);
+    for (const screen of screens) screen.override = null;
+    dropUnusedPlayNow();
+    changed();
+    res.json({ screens: screens.map(screenView) });
   });
 
   // ---- Static UIs ----

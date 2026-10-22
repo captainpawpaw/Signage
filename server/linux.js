@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { PLAYER_VENDOR } from './live.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLAYER_FILES = ['player.html', 'player.js', 'player.css'];
@@ -77,6 +78,7 @@ export function buildAgentPackage() {
     { name: 'agent/agent.js', data: fs.readFileSync(path.join(ROOT, 'agent', 'agent.js')) },
     { name: 'agent/package.json', data: fs.readFileSync(path.join(ROOT, 'agent', 'package.json')) },
     ...PLAYER_FILES.map((f) => ({ name: `player/${f}`, data: fs.readFileSync(path.join(ROOT, 'player', f)) })),
+    ...Object.entries(PLAYER_VENDOR).map(([f, src]) => ({ name: `player/${f}`, data: fs.readFileSync(src) })),
   ];
   for (const dep of dependencyTree(AGENT_DEPENDENCIES)) entries.push(...filesUnder(path.join(ROOT, 'node_modules', dep), `node_modules/${dep}`));
   return tarGz(entries);

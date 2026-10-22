@@ -170,3 +170,20 @@ details summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
   main { padding: 16px; }
   .brand { display: none; }
 }
+
+/* Channels */
+.picker-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.picker-controls input[type=search] { flex: 1 1 220px; }
+.channel-thumb { background: #111827; }
+.channel-thumb img { object-fit: contain; padding: 8%; box-sizing: border-box; }
+.tv-glyph { font-size: 28px; }
+.badge.live { background: #dc2626; }
+td div.mini-thumb { width: 72px; height: 40px; overflow: hidden; border-radius: 4px; }
+td div.mini-thumb .thumb { width: 72px; height: 40px; aspect-ratio: auto; }
+td div.mini-thumb .badge { display: none; }
+td div.mini-thumb .tv-glyph { font-size: 18px; }
+.channel-preview { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; }
+.play-now-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.play-now-row strong { color: #dc2626; }
+.picker-controls select { width: auto; flex: 0 1 240px; }
+.picker-controls > .muted { white-space: nowrap; }

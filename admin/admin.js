@@ -65,8 +65,16 @@ function openModal(...content) {
 }
 const closeModal = () => modal.close();
 
+const isChannel = (m) => m?.type === 'stream';
+
 function thumb(media) {
   if (!media) return h('div', { class: 'thumb' }, 'missing');
+  if (isChannel(media)) {
+    return h('div', { class: 'thumb channel-thumb' },
+      media.logo ? h('img', { src: media.logo, loading: 'lazy', alt: '', referrerpolicy: 'no-referrer', onerror: (e) => e.target.replaceWith(h('span', { class: 'tv-glyph' }, '📺')) })
+        : h('span', { class: 'tv-glyph' }, '📺'),
+      h('span', { class: 'badge live' }, 'live'));
+  }
   const src = media.type === 'deck' ? (media.pages?.[0] && `/files/${media.pages[0]}`) : `/files/${media.file}`;
   let inner;
   if (media.status !== 'ready') inner = h('span', {}, media.status === 'error' ? 'Conversion failed' : 'Converting…');
@@ -110,6 +118,7 @@ const routes = [
   [/^#\/schedule$/, () => scheduleView()],
   [/^#\/schedule\/(screen|group)\/(.+)$/, (kind, sid) => scheduleView(kind, sid)],
   [/^#\/media$/, mediaView],
+  [/^#\/channels$/, channelsView],
   [/^#\/playlists$/, playlistsView],
   [/^#\/playlists\/(.+)$/, playlistEditor],
   [/^#\/settings$/, settingsView],
@@ -175,7 +184,15 @@ async function screensView() {
       h('div', { class: 'chips' }, securityLabel(s), groupNames(s).map((g) => h('span', { class: 'badge-inline' }, g))),
       h('dl', { class: 'kv' },
         h('dt', {}, 'Location'), h('dd', {}, s.location || '—'),
-        h('dt', {}, 'Now playing'), h('dd', {}, plName(s.activePlaylistId), h('span', { class: 'muted' }, via)),
+        s.playNow
+          ? [h('dt', {}, 'Now playing'), h('dd', { class: 'play-now-row' },
+            h('strong', {}, s.playNow.name), h('span', { class: 'muted' }, s.playNow.until ? ` until ${whenLabel(s.playNow.until)}` : ' until stopped'),
+            h('button', { class: 'small', title: 'Go back to the schedule', onclick: guard(async () => {
+              await api('POST', '/api/play-now/stop', { targets: { screenIds: [s.id] } });
+              toast(`${s.name} is back on its schedule`);
+              screensView();
+            }) }, 'Stop'))]
+          : [h('dt', {}, 'Now playing'), h('dd', {}, plName(s.activePlaylistId), h('span', { class: 'muted' }, via))],
         h('dt', {}, 'Up next'), h('dd', { title: (s.upcoming || []).map((u) => `${whenLabel(u.at)}: ${u.playlistName || 'nothing'}`).join('\n') },
           s.upcoming?.length ? `${s.upcoming[0].playlistName || 'nothing scheduled'} · ${whenLabel(s.upcoming[0].at)}` : '—'),
         h('dt', {}, 'Progress'), h('dd', {}, showing),
@@ -189,6 +206,7 @@ async function screensView() {
           ? [h('dt', {}, 'Add-on'), h('dd', { class: 'status-processing' }, `v${st.addonVersion} – update to v${info.addonVersion} pending`)] : null),
       h('div', { class: 'actions' },
         h('button', { class: 'small', onclick: () => screenEditor(s, playlists, groups) }, 'Edit'),
+        h('button', { class: 'small', onclick: guard(() => playNowDialog({ screenIds: [s.id] })) }, 'Play now'),
         h('button', { class: 'small', onclick: () => extensionDialog(s) }, 'Add-on'),
         h('button', { class: 'small', disabled: !info.allowPlaintext, onclick: guard(() => preview(s)) }, 'Preview'),
         h('button', { class: 'small', disabled: !st.online, onclick: guard(() => command(s, 'identify')) }, 'Identify'),
@@ -547,7 +565,7 @@ function groupEditor(g, screens, playlists) {
 
 // ---------- media ----------
 async function mediaView() {
-  const media = await api('GET', '/api/media');
+  const media = (await api('GET', '/api/media')).filter((m) => !isChannel(m));
   const fileInput = h('input', { type: 'file', multiple: true, hidden: true, accept: 'image/*,video/*,.pdf,.ppt,.pptx,.pps,.ppsx,.odp,.key', onchange: (e) => uploadFiles(e.target.files) });
   const decksNote = info.converters.office ? 'PDF and PowerPoint/ODP decks are converted to slides.'
     : info.converters.pdf ? 'PDF decks are converted to slides (install LibreOffice for PowerPoint).' : 'Install poppler-utils on the server to upload PDF decks.';
@@ -578,7 +596,8 @@ async function mediaView() {
   view.replaceChildren(
     h('div', { class: 'toolbar' }, h('h1', {}, 'Media'), h('button', { class: 'primary', onclick: () => fileInput.click() }, '+ Upload')),
     zone, fileInput,
-    media.length ? h('div', { class: 'media-grid' }, [...media].reverse().map(card)) : h('div', { class: 'card empty' }, 'No media yet.'));
+    media.length ? h('div', { class: 'media-grid' }, [...media].reverse().map(card)) : h('div', { class: 'card empty' }, 'No media yet.'),
+    h('p', { class: 'hint' }, 'Live TV streams are added under ', h('a', { href: '#/channels' }, 'Channels'), '.'));
 
   if (media.some((m) => m.status === 'processing')) {
     refreshTimer = setInterval(guard(async () => {
@@ -641,6 +660,7 @@ async function playlistEditor(pid) {
 
   const renderRows = () => tbody.replaceChildren(...draft.items.map((it, i) => {
     const m = byId(it.mediaId);
+    if (isChannel(m)) return channelRow(it, i, m);
     const move = (d) => { const j = i + d; if (j < 0 || j >= draft.items.length) return; [draft.items[i], draft.items[j]] = [draft.items[j], draft.items[i]]; renderRows(); };
     const src = m?.type === 'deck' ? m.pages?.[0] && `/files/${m.pages[0]}` : m && `/files/${m.file}`;
     return h('tr', {},
@@ -655,20 +675,33 @@ async function playlistEditor(pid) {
         h('button', { class: 'small', disabled: i === draft.items.length - 1, onclick: () => move(1) }, '↓'),
         h('button', { class: 'small danger', onclick: () => { draft.items.splice(i, 1); renderRows(); } }, '✕'))));
   }));
+  const rowActions = (i) => h('td', {}, h('div', { class: 'actions' },
+    h('button', { class: 'small', disabled: i === 0, onclick: () => { [draft.items[i - 1], draft.items[i]] = [draft.items[i], draft.items[i - 1]]; renderRows(); } }, '↑'),
+    h('button', { class: 'small', disabled: i === draft.items.length - 1, onclick: () => { [draft.items[i + 1], draft.items[i]] = [draft.items[i], draft.items[i + 1]]; renderRows(); } }, '↓'),
+    h('button', { class: 'small danger', onclick: () => { draft.items.splice(i, 1); renderRows(); } }, '✕')));
+  // A channel plays non-stop when it is the only item; otherwise for its seconds (5 minutes if empty).
+  function channelRow(it, i, m) {
+    return h('tr', {},
+      h('td', {}, i + 1),
+      h('td', {}, h('div', { class: 'mini-thumb' }, thumb(m))),
+      h('td', {}, m.name, h('div', { class: 'hint' }, `live TV${m.group ? ` · ${m.group}` : ''} · ${draft.items.length > 1 ? 'empty seconds = 5 minutes' : 'empty seconds = non-stop'}`)),
+      h('td', {}, h('input', { type: 'number', min: 0, step: 1, value: it.duration || '', placeholder: draft.items.length > 1 ? '300' : '∞', oninput: (e) => { it.duration = Number(e.target.value) || 0; } })),
+      h('td', {}, h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: it.muted !== false, onchange: (e) => { it.muted = e.target.checked; } }), 'muted')),
+      rowActions(i));
+  }
   renderRows();
 
   const picker = () => {
-    const ready = media.filter((m) => m.status === 'ready');
     openModal(
-      h('h1', {}, 'Add media'),
-      ready.length ? h('div', { class: 'picker' }, [...ready].reverse().map((m) => h('button', {
-        onclick: () => { draft.items.push({ mediaId: m.id, duration: 0, muted: true }); renderRows(); toast(`Added ${m.name}`); },
-      }, thumb(m), h('span', {}, m.name)))) : h('p', { class: 'muted' }, 'No media uploaded yet — go to Media first.'),
+      h('h1', {}, 'Add media or a channel'),
+      media.some((m) => m.status === 'ready')
+        ? mediaPicker(media, { onPick: (m) => { draft.items.push({ mediaId: m.id, duration: 0, muted: !isChannel(m) }); renderRows(); toast(`Added ${m.name}`); } })
+        : h('p', { class: 'muted' }, 'No media uploaded yet — go to Media or Channels first.'),
       h('div', { class: 'modal-actions' }, h('button', { class: 'primary', onclick: closeModal }, 'Done')));
   };
 
   const save = guard(async () => {
-    await api('PUT', `/api/playlists/${pid}`, { name: draft.name, defaultDuration: draft.defaultDuration, items: draft.items });
+    await api('PUT', `/api/playlists/${pid}`, { name: draft.name, defaultDuration: draft.defaultDuration, items: draft.items, overlay: draft.overlay });
     toast('Saved — screens showing this playlist update now');
   });
   const remove = guard(async () => {
@@ -689,7 +722,306 @@ async function playlistEditor(pid) {
       h('h2', {}, 'Items'),
       h('div', { class: 'table-wrap' }, h('table', {},
         h('thead', {}, h('tr', {}, ['#', '', 'Media', 'Seconds', '', ''].map((t) => h('th', {}, t)))), tbody)),
-      h('div', { class: 'toolbar', style: 'margin-top:12px' }, h('button', { onclick: picker }, '+ Add media'))));
+      h('div', { class: 'toolbar', style: 'margin-top:12px' }, h('button', { onclick: picker }, '+ Add media or channel'))),
+    overlayEditor(draft, media));
+}
+
+// Ticker and logo shown on top of everything in a playlist.
+function overlayEditor(draft, media) {
+  draft.overlay ||= {};
+  const o = draft.overlay;
+  o.ticker ||= { text: '', position: 'bottom', speed: 'normal', size: 'medium', color: '#ffffff', background: '#000000' };
+  o.logo ||= { mediaId: '', corner: 'top-right', size: 12 };
+  const images = media.filter((m) => m.type === 'image' && m.status === 'ready');
+  const select = (value, options, onchange) => h('select', { onchange: (e) => onchange(e.target.value) },
+    options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+  // Colours are stored with transparency (e.g. #000000cc); the picker edits the colour part.
+  const bg = (o.ticker.background || '#000000cc').slice(0, 7);
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Ticker and logo'),
+    h('p', { class: 'hint' }, 'Shown on top of this playlist, for example over a TV channel. Leave the text empty for no ticker.'),
+    h('label', {}, 'Ticker text', h('textarea', { rows: 2, placeholder: 'Welcome to reception. Each line becomes a separate message.', oninput: (e) => { o.ticker.text = e.target.value; } }, o.ticker.text || '')),
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'Position', select(o.ticker.position, [['bottom', 'Bottom'], ['top', 'Top']], (v) => { o.ticker.position = v; })),
+      h('label', {}, 'Speed', select(o.ticker.speed, [['slow', 'Slow'], ['normal', 'Normal'], ['fast', 'Fast']], (v) => { o.ticker.speed = v; })),
+      h('label', {}, 'Text size', select(o.ticker.size, [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']], (v) => { o.ticker.size = v; })),
+      h('label', {}, 'Text colour', h('input', { type: 'color', value: o.ticker.color || '#ffffff', oninput: (e) => { o.ticker.color = e.target.value; } })),
+      h('label', {}, 'Bar colour', h('input', { type: 'color', value: bg, oninput: (e) => { o.ticker.background = `${e.target.value}cc`; } }))),
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'Logo', images.length
+        ? select(o.logo.mediaId || '', [['', 'No logo'], ...[...images].reverse().map((m) => [m.id, m.name])], (v) => { o.logo.mediaId = v; })
+        : h('span', { class: 'hint' }, 'Upload a logo image under Media first (PNG with a transparent background works best).')),
+      h('label', {}, 'Corner', select(o.logo.corner, [['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right']], (v) => { o.logo.corner = v; })),
+      h('label', {}, 'Logo width (% of screen)', h('input', { type: 'number', min: 3, max: 40, value: o.logo.size || 12, oninput: (e) => { o.logo.size = Number(e.target.value) || 12; } }))));
+}
+
+// Media and channel picker with search, for long channel lists.
+function mediaPicker(media, { onPick, picked = () => 0, label = (m) => m.name }) {
+  const ready = [...media].reverse().filter((m) => m.status === 'ready');
+  const hasBoth = ready.some(isChannel) && ready.some((m) => !isChannel(m));
+  let query = '';
+  let kind = 'all';
+  const LIMIT = 120;
+  const grid = h('div', { class: 'picker' });
+  const more = h('p', { class: 'hint' });
+  const render = () => {
+    const q = query.trim().toLowerCase();
+    const list = ready.filter((m) => (kind === 'all' || (kind === 'live') === isChannel(m))
+      && (!q || m.name.toLowerCase().includes(q) || (m.group || '').toLowerCase().includes(q)));
+    grid.replaceChildren(...list.slice(0, LIMIT).map((m) => {
+      const n = picked(m);
+      return h('button', { type: 'button', class: n ? 'picked' : '', onclick: () => { onPick(m); render(); } }, thumb(m), h('span', { title: m.name }, label(m)));
+    }));
+    more.textContent = list.length > LIMIT ? `Showing ${LIMIT} of ${list.length}: type to narrow it down.` : list.length ? '' : 'Nothing matches.';
+  };
+  render();
+  return h('div', {},
+    h('div', { class: 'picker-controls' },
+      h('input', { type: 'search', placeholder: 'Search by name or group', oninput: (e) => { query = e.target.value; render(); } }),
+      hasBoth ? h('select', { onchange: (e) => { kind = e.target.value; render(); } },
+        h('option', { value: 'all' }, 'Everything'), h('option', { value: 'files' }, 'Images, videos, decks'), h('option', { value: 'live' }, 'TV channels')) : ''),
+    grid, more);
+}
+
+// ---------- channels ----------
+async function channelsView() {
+  const channels = (await api('GET', '/api/media')).filter(isChannel);
+  const groups = [...new Set(channels.map((c) => c.group).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const selected = new Set();
+  let query = '';
+  let group = '';
+  const LIMIT = 300;
+  const tbody = h('tbody');
+  const count = h('span', { class: 'muted' });
+  const deleteSelected = h('button', { class: 'danger', hidden: true, onclick: guard(async () => {
+    if (!confirm(`Delete ${selected.size} channel(s)? They are removed from every playlist.`)) return;
+    await api('POST', '/api/channels/delete', { ids: [...selected] });
+    channelsView();
+  }) });
+  const visible = () => {
+    const q = query.trim().toLowerCase();
+    return channels.filter((c) => (!group || c.group === group) && (!q || c.name.toLowerCase().includes(q) || c.url.toLowerCase().includes(q)));
+  };
+  const syncSelection = () => {
+    deleteSelected.hidden = !selected.size;
+    deleteSelected.textContent = `Delete ${selected.size} selected`;
+  };
+  const render = () => {
+    const list = visible();
+    count.textContent = `${list.length} of ${channels.length} channels${list.length > LIMIT ? ` (showing ${LIMIT}: search to narrow down)` : ''}`;
+    tbody.replaceChildren(...list.slice(0, LIMIT).map((c) => h('tr', {},
+      h('td', {}, h('input', { type: 'checkbox', checked: selected.has(c.id), onchange: (e) => { e.target.checked ? selected.add(c.id) : selected.delete(c.id); syncSelection(); } })),
+      h('td', {}, h('div', { class: 'mini-thumb' }, thumb(c))),
+      h('td', {}, h('strong', {}, c.name), h('div', { class: 'hint mono', title: c.url }, c.url.length > 70 ? `${c.url.slice(0, 67)}…` : c.url)),
+      h('td', {}, c.group || h('span', { class: 'muted' }, '—')),
+      h('td', {}, { hls: 'HLS', ts: 'MPEG-TS', file: 'Video file' }[c.format] || c.format, c.relay === 'always' ? h('div', { class: 'hint' }, 'via server') : ''),
+      h('td', {}, h('div', { class: 'actions' },
+        h('button', { class: 'small', onclick: () => channelPreview(c) }, 'Preview'),
+        h('button', { class: 'small', onclick: guard(() => playNowDialog({ channel: c })) }, 'Play on…'),
+        h('button', { class: 'small', onclick: () => channelEditor(c) }, 'Edit'),
+        h('button', { class: 'small danger', onclick: guard(async () => {
+          if (!confirm(`Delete “${c.name}”? It is removed from every playlist.`)) return;
+          await api('DELETE', `/api/media/${c.id}`);
+          channelsView();
+        }) }, '✕'))))));
+  };
+  const allBox = h('input', { type: 'checkbox', title: 'Select all shown', onchange: (e) => {
+    for (const c of visible().slice(0, LIMIT)) e.target.checked ? selected.add(c.id) : selected.delete(c.id);
+    syncSelection();
+    render();
+  } });
+
+  view.replaceChildren(
+    h('div', { class: 'toolbar' },
+      h('h1', {}, 'Channels'),
+      h('button', { onclick: () => importDialog() }, 'Import channel list'),
+      h('button', { class: 'primary', onclick: () => channelEditor(null) }, '+ Add channel')),
+    channels.length
+      ? h('div', { class: 'card' },
+        h('div', { class: 'picker-controls' },
+          h('input', { type: 'search', placeholder: 'Search channels', oninput: (e) => { query = e.target.value; render(); } }),
+          groups.length ? h('select', { onchange: (e) => { group = e.target.value; render(); } },
+            h('option', { value: '' }, 'All groups'), groups.map((g) => h('option', { value: g }, g))) : '',
+          count, deleteSelected),
+        h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, allBox), ['', 'Channel', 'Group', 'Type', ''].map((t) => h('th', {}, t)))), tbody)))
+      : h('div', { class: 'card empty' },
+        h('p', {}, 'No TV channels yet.'),
+        h('p', {}, 'Add a stream link (for example https://…/live.m3u8 from your IPTV provider or a streaming encoder), or import your provider’s channel list (.m3u). Channels then go into playlists, the Schedule, or straight onto screens with ', h('strong', {}, 'Play now'), '.')),
+    h('p', { class: 'hint' }, 'Screens play channels straight from the source. If a screen can’t open a stream directly (some providers block browsers), it plays it through this server instead, which uses this server’s internet connection.'));
+  render();
+}
+
+function channelEditor(c) {
+  const draft = c ? { ...c } : { name: '', url: '', logo: '', group: '', relay: 'auto' };
+  const save = guard(async () => {
+    const body = { name: draft.name, url: draft.url, logo: draft.logo, group: draft.group, relay: draft.relay };
+    if (c) await api('PUT', `/api/channels/${c.id}`, body); else await api('POST', '/api/channels', body);
+    closeModal();
+    toast(c ? 'Saved — screens update now' : 'Channel added');
+    channelsView();
+  });
+  openModal(
+    h('h1', {}, c ? `Edit ${c.name}` : 'Add channel'),
+    h('label', {}, 'Stream link', h('input', { value: draft.url, placeholder: 'https://example.com/live/channel.m3u8', oninput: (e) => { draft.url = e.target.value; } }),
+      h('span', { class: 'hint' }, 'HLS (.m3u8), MPEG-TS over HTTP (common in IPTV lists) or a video file link.')),
+    h('label', {}, 'Name', h('input', { value: draft.name, placeholder: 'e.g. BBC News', oninput: (e) => { draft.name = e.target.value; } })),
+    h('div', { class: 'form-grid' },
+      h('label', {}, 'Group', h('input', { value: draft.group, placeholder: 'optional, e.g. News', oninput: (e) => { draft.group = e.target.value; } })),
+      h('label', {}, 'Logo link', h('input', { value: draft.logo, placeholder: 'optional, https://…/logo.png', oninput: (e) => { draft.logo = e.target.value; } }))),
+    h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: draft.relay === 'always', onchange: (e) => { draft.relay = e.target.checked ? 'always' : 'auto'; } }),
+      'Always play through this server'),
+    h('p', { class: 'hint' }, 'Turn this on when the stream only works from this server’s network (e.g. a provider that checks the address), or so many screens on the same channel share one download.'),
+    h('div', { class: 'modal-actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: save }, c ? 'Save' : 'Add')));
+}
+
+function importDialog() {
+  let source = 'url';
+  let found = null;
+  const groupSet = new Set();
+  const urlInput = h('input', { placeholder: 'https://provider.example/get.php?…&type=m3u_plus' });
+  const textInput = h('textarea', { rows: 6, placeholder: '#EXTM3U\n#EXTINF:-1 group-title="News",News 24\nhttps://…/news24.m3u8', hidden: true });
+  const groupSlot = h('div');
+  const readRow = h('div', { class: 'modal-actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: () => read() }, 'Read list'));
+  const body = () => (source === 'url' ? { url: urlInput.value.trim() } : { text: textInput.value });
+  const read = guard(async () => {
+    found = await api('POST', '/api/channels/import', { ...body(), preview: true });
+    groupSet.clear();
+    for (const g of found.groups) groupSet.add(g.name);
+    const named = found.groups.map((g) => ({ id: g.name, name: g.name || 'No group', count: g.count }));
+    groupSlot.replaceChildren(
+      h('p', {}, `${found.total} channels in ${found.groups.length} group(s). Untick the groups you don’t want.`),
+      found.groups.length > 1 ? memberChecklist(named, groupSet, (g) => `${g.name} (${g.count})`) : '',
+      h('div', { class: 'modal-actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: doImport }, 'Import')));
+    readRow.hidden = true;
+  });
+  const doImport = guard(async () => {
+    const res = await api('POST', '/api/channels/import', { ...body(), groups: [...groupSet] });
+    closeModal();
+    toast(`Imported ${res.created} channel(s)${res.skipped ? `, ${res.skipped} skipped (already added or not chosen)` : ''}`);
+    channelsView();
+  });
+  const radio = (value, label) => h('label', { class: 'inline' }, h('input', { type: 'radio', name: 'm3u-source', checked: source === value, onchange: () => {
+    source = value; urlInput.hidden = value !== 'url'; textInput.hidden = value !== 'text';
+  } }), label);
+  openModal(
+    h('h1', {}, 'Import channel list'),
+    h('p', {}, 'IPTV providers give a channel list as an .m3u link or file. All its channels are added here, with their names, groups and logos.'),
+    h('div', { class: 'segmented' }, radio('url', 'Link to the list'), radio('text', 'Paste the list')),
+    urlInput, textInput, readRow, groupSlot);
+}
+
+// Plays a channel in the console with the same libraries the screens use.
+async function channelPreview(c) {
+  const video = h('video', { controls: true, muted: true, autoplay: true, playsinline: true, class: 'channel-preview' });
+  const status = h('p', { class: 'hint' }, 'Connecting…');
+  let engine = null;
+  const stop = () => { try { engine?.destroy(); } catch {} engine = null; video.removeAttribute('src'); video.load(); };
+  const loadLib = (file, global) => new Promise((resolve, reject) => {
+    if (window[global]) return resolve(window[global]);
+    const s = document.createElement('script');
+    s.src = `/player/${file}`;
+    s.onload = () => resolve(window[global]);
+    s.onerror = reject;
+    document.head.append(s);
+  });
+  const play = async (src) => {
+    stop();
+    return new Promise(async (resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('no picture after 20 seconds')), 20_000);
+      video.onplaying = () => { clearTimeout(t); resolve(); };
+      video.onerror = () => { clearTimeout(t); reject(new Error('the browser could not play it')); };
+      try {
+        if (c.format === 'hls') {
+          const Hls = await loadLib('hls.min.js', 'Hls');
+          if (Hls.isSupported()) {
+            engine = new Hls();
+            engine.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) { clearTimeout(t); reject(new Error(d.details)); } });
+            engine.loadSource(src);
+            engine.attachMedia(video);
+          } else video.src = src;
+        } else if (c.format === 'ts') {
+          const mpegts = await loadLib('mpegts.js', 'mpegts');
+          engine = mpegts.createPlayer({ type: 'mpegts', isLive: true, url: src });
+          engine.on(mpegts.Events.ERROR, (type, detail) => { clearTimeout(t); reject(new Error(`${type} ${detail}`)); });
+          engine.attachMediaElement(video);
+          engine.load();
+        } else video.src = src;
+        video.play().catch(() => {});
+      } catch (err) { clearTimeout(t); reject(err); }
+    });
+  };
+  const viaServer = guard(async () => {
+    status.textContent = 'Connecting through the server…';
+    const { relay } = await api('GET', `/api/channels/${c.id}/relay`);
+    try { await play(relay); status.textContent = 'Playing through this server. Screens that can’t open the stream directly do the same.'; } catch (err) { status.textContent = `It doesn’t play through the server either (${err.message}). Check the link with your provider.`; }
+  });
+  modal.addEventListener('close', stop, { once: true });
+  openModal(
+    h('h1', {}, c.name),
+    video, status,
+    h('div', { class: 'modal-actions' }, h('button', { onclick: viaServer }, 'Try through the server'), h('button', { class: 'primary', onclick: closeModal }, 'Close')));
+  if (c.relay === 'always') return viaServer();
+  try { await play(c.url); status.textContent = 'Playing straight from the source.'; } catch (err) {
+    status.textContent = `This browser can’t open the stream directly (${err.message}). Trying through the server…`;
+    viaServer();
+  }
+}
+
+// Puts a channel, media or a playlist on screens now, ahead of their schedule.
+async function playNowDialog({ channel = null, screenIds = [], groupIds = [] } = {}) {
+  const [media, playlists, screens, groups] = await Promise.all([api('GET', '/api/media'), listPlaylists(), api('GET', '/api/screens'), api('GET', '/api/groups')]);
+  const screenSet = new Set(screenIds);
+  const groupSet = new Set(groupIds);
+  let what = channel || !playlists.length ? 'media' : 'playlist';
+  let pickedMedia = channel;
+  let playlistId = playlists[0]?.id;
+  let sound = true;
+  let minutes = '60';
+  const pickedLabel = h('p', { class: 'hint' });
+  const showPicked = () => { pickedLabel.textContent = pickedMedia ? `Selected: ${pickedMedia.name}` : 'Click a channel or media item.'; };
+  showPicked();
+  const mediaPane = h('div', {},
+    mediaPicker(media, { picked: (m) => (pickedMedia?.id === m.id ? 1 : 0), onPick: (m) => { pickedMedia = m; showPicked(); } }),
+    pickedLabel,
+    h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: sound, onchange: (e) => { sound = e.target.checked; } }), 'Sound on (TV channels and videos)'));
+  const playlistPane = h('div', {}, playlists.length
+    ? h('select', { onchange: (e) => { playlistId = e.target.value; } }, playlists.map((p) => h('option', { value: p.id }, p.name)))
+    : h('p', { class: 'muted' }, 'No playlists yet.'));
+  const showWhat = () => { mediaPane.hidden = what !== 'media'; playlistPane.hidden = what !== 'playlist'; };
+  showWhat();
+  const radio = (name, checked, label, onchange) => h('label', { class: 'inline' }, h('input', { type: 'radio', name, checked, onchange }), label);
+  const start = guard(async () => {
+    const targets = { screenIds: [...screenSet], groupIds: [...groupSet] };
+    if (!targets.screenIds.length && !targets.groupIds.length) return toast('Choose at least one screen or group');
+    let content;
+    if (what === 'media') {
+      if (!pickedMedia) return toast('Choose a channel or media item');
+      content = { type: 'media', items: [{ mediaId: pickedMedia.id, duration: 0, muted: !sound }] };
+    } else content = { type: 'playlist', playlistId };
+    let until = null;
+    if (minutes === 'today') until = new Date(new Date().setHours(24, 0, 0, 0)).toISOString();
+    const res = await api('POST', '/api/play-now', { targets, content, minutes: minutes === 'today' || minutes === 'stop' ? 0 : Number(minutes), until });
+    closeModal();
+    toast(`Playing on ${res.screens.length} screen(s)`);
+    if (location.hash === '#/screens' || location.hash === '') screensView();
+  });
+  openModal(
+    h('h1', {}, 'Play now'),
+    h('p', { class: 'hint' }, 'Shows this straight away, ahead of the schedule. When it ends (or you press Stop on the screen), the screen goes back to its schedule.'),
+    h('div', { class: 'step' }, h('h2', {}, 'What'),
+      h('div', { class: 'segmented' },
+        radio('pn-what', what === 'media', 'A channel or media item', () => { what = 'media'; showWhat(); }),
+        radio('pn-what', what === 'playlist', 'A playlist', () => { what = 'playlist'; showWhat(); })),
+      mediaPane, playlistPane),
+    h('div', { class: 'step' }, h('h2', {}, 'Where'),
+      groups.length ? [h('div', { class: 'field-label' }, 'Groups'), memberChecklist(groups, groupSet, (g) => g.name)] : '',
+      h('div', { class: 'field-label' }, 'Screens'), memberChecklist(screens, screenSet, (x) => x.name)),
+    h('div', { class: 'step' }, h('h2', {}, 'For how long'),
+      h('select', { onchange: (e) => { minutes = e.target.value; } },
+        [['15', '15 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['120', '2 hours'], ['240', '4 hours'], ['today', 'Until the end of today'], ['stop', 'Until I stop it']]
+          .map(([v, label]) => h('option', { value: v, selected: v === minutes }, label)))),
+    h('div', { class: 'modal-actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: start }, 'Play now')));
 }
 
 // ---------- schedule ----------
@@ -836,18 +1168,20 @@ function entryEditor(entry, { screens, groups, playlists, media }, done, presele
       playlists.map((pl) => h('option', { value: pl.id, selected: pl.id === draft.content.playlistId }, pl.name)))
     : h('p', { class: 'muted' }, 'No playlists yet: choose media instead, or create one under Playlists.'));
   const order = h('p', { class: 'hint' });
-  const mediaGrid = h('div', { class: 'picker' });
-  const renderMedia = () => {
-    mediaGrid.replaceChildren(...[...ready].reverse().map((m) => {
-      const n = draft.content.items.findIndex((it) => it.mediaId === m.id);
-      return h('button', { type: 'button', class: n >= 0 ? 'picked' : '', onclick: () => {
-        if (n >= 0) draft.content.items.splice(n, 1); else draft.content.items.push({ mediaId: m.id, duration: 0, muted: true });
-        renderMedia();
-      } }, thumb(m), h('span', {}, n >= 0 ? `${n + 1}. ` : '', m.name));
-    }));
-    order.textContent = draft.content.items.length ? `${draft.content.items.length} selected; they play in the order you picked them.` : 'Click media to add it, in the order it should play.';
+  const position = (m) => draft.content.items.findIndex((it) => it.mediaId === m.id) + 1;
+  const renderOrder = () => {
+    order.textContent = draft.content.items.length ? `${draft.content.items.length} selected; they play in the order you picked them.` : 'Click media or channels to add them, in the order they should play.';
   };
-  renderMedia();
+  const mediaGrid = mediaPicker(media, {
+    picked: position,
+    label: (m) => (position(m) ? `${position(m)}. ${m.name}` : m.name),
+    onPick: (m) => {
+      const n = position(m);
+      if (n) draft.content.items.splice(n - 1, 1); else draft.content.items.push({ mediaId: m.id, duration: 0, muted: !isChannel(m) });
+      renderOrder();
+    },
+  });
+  renderOrder();
   const mediaPane = h('div', {},
     ready.length ? mediaGrid : h('p', { class: 'muted' }, 'No media yet: upload some under Media first.'), order,
     h('label', { class: 'inline' }, 'Seconds per image or slide ', h('input', { type: 'number', min: 1, value: draft.content.seconds, style: 'width:80px', oninput: (e) => { draft.content.seconds = Number(e.target.value) || 10; } })));

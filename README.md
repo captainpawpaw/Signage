@@ -169,6 +169,7 @@ screen. Download them from the
 |-------|-----|
 | `signage-os-pi.img.xz` | Raspberry Pi 3, 4, 5, 400, 500, Zero 2 W |
 | `signage-os-pc.img.xz` | 64-bit PCs: old workstations, thin clients, laptops, mini PCs. BIOS or UEFI; Secure Boot works |
+| `signage-os-pc-vmware.zip` | Trying Signage OS in VMware Workstation or VirtualBox |
 
 1. Write the image to an SD card (Pi) or USB stick (PC) with Raspberry Pi
    Imager or balenaEtcher. Both take the `.img.xz` as it is.
@@ -184,6 +185,13 @@ On a PC started from a USB stick, Signage OS first offers to install itself on
 the internal disk. Press **I**, then type **YES**. Everything on that disk is
 erased. When it's done, pull the stick out and the PC restarts from its own
 disk. Ignore the offer and it keeps running from the stick.
+
+**Trying it in a virtual machine.** `signage-os-pc-vmware.zip` holds a
+ready-made virtual disk (`signage-os-pc.vmdk`, 16 GB) for VMware Workstation
+Pro (free) or VirtualBox. Unzip it, create a virtual machine (Linux, Debian
+64-bit, 2–4 GB memory, 2 processors) that uses this disk, set the network to
+**Bridged**, and start it. The Raspberry Pi image can't run in a virtual
+machine; a real Pi is needed for that.
 
 Laptops keep playing with the lid closed, and the screen never sleeps.
 On a Pi, the Wi-Fi and user settings in Raspberry Pi Imager still work.

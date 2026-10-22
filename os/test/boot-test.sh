@@ -3,7 +3,7 @@
 # the whole first start: the screen finds the setup file, installs the player,
 # shows up in the console as a pairing request, gets paired and comes online.
 #
-#   os/test/boot-test.sh IMAGE [bios|uefi] [disk|install]
+#   os/test/boot-test.sh IMAGE [bios|uefi] [disk|install]      (IMAGE: .img, or .vmdk for disk)
 #     disk     the image is the computer's disk; the setup file is on a USB stick
 #     install  the image is a USB stick (with the setup file on its SIGNAGE
 #              drive) and the computer has an empty disk: Signage OS installs
@@ -53,7 +53,9 @@ curl -fsS "$BASE/addon/signage-linux-setup.sh" -o "$WORK/signage-linux-setup.sh"
 
 echo "== Disks ($FIRMWARE, $MODE)"
 DRIVES=()
-qemu-img create -q -f qcow2 -b "$IMG" -F raw "$WORK/os.qcow2" 8G
+FORMAT=raw
+case "$IMG" in *.vmdk) FORMAT=vmdk ;; esac # the VMware / VirtualBox disk
+qemu-img create -q -f qcow2 -b "$IMG" -F "$FORMAT" "$WORK/os.qcow2" 16G
 if [ "$MODE" = install ]; then
   # The Signage OS stick with the setup file copied onto its SIGNAGE drive.
   ESP_START=$(sgdisk -i 2 "$IMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')

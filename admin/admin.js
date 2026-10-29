@@ -88,6 +88,57 @@ function thumb(media) {
 // Playlists made by the Schedule page for directly picked media are hidden.
 const listPlaylists = () => api('GET', '/api/playlists').then((list) => list.filter((p) => !p.hidden));
 
+// ---------- screen shape ----------
+// A screen is 16:9 unless set otherwise. The shape is the screen's own (32:9 for
+// a bar screen); turned to portrait, its content is 9:32.
+const SHAPES = [['16:9', '16:9 (standard)'], ['16:10', '16:10'], ['21:9', '21:9 (ultra-wide)'], ['32:9', '32:9 (bar / double-wide)'],
+  ['4:3', '4:3'], ['1:1', '1:1 (square)'], ['custom', 'Custom ratio…'], ['pixels', 'Exact size in pixels…']];
+const isPortrait = (settings) => /^portrait/.test(settings?.orientation || '');
+function shapeKey(shape) {
+  if (!shape) return '16:9';
+  if (shape.kind === 'pixels') return 'pixels';
+  const key = `${shape.w}:${shape.h}`;
+  return SHAPES.some(([v]) => v === key) ? key : 'custom';
+}
+function ratioText(w, h) {
+  const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+  if (Number.isInteger(w) && Number.isInteger(h)) {
+    const g = gcd(w, h);
+    if (w / g <= 64 && h / g <= 64) return `${w / g}:${h / g}`;
+  }
+  return w >= h ? `${(w / h).toFixed(2)}:1` : `1:${(h / w).toFixed(2)}`;
+}
+// What viewers see: { w, h } of the content, after rotation.
+function viewShape(settings) {
+  const sh = settings?.shape;
+  const [w, h] = sh ? [sh.w, sh.h] : [16, 9];
+  return isPortrait(settings) ? { w: h, h: w } : { w, h };
+}
+// "32:9 · landscape", or "32:9 · portrait (content 9:32)".
+function shapeLabel(settings) {
+  const sh = settings?.shape;
+  const text = (w, h) => (sh?.kind === 'pixels' ? `${w}×${h} px` : ratioText(w, h));
+  const native = sh ? text(sh.w, sh.h) : '16:9';
+  if (!isPortrait(settings)) return `${native} · landscape`;
+  const v = viewShape(settings);
+  return `${native} · portrait (content ${text(v.w, v.h)})`;
+}
+// The screen reports its picture size; flag a clear mismatch with the shape set here.
+function shapeMismatch(s) {
+  const d = s.status?.display;
+  if (!d?.width || !d?.height) return null;
+  const sh = s.settings.shape;
+  const reported = d.width / d.height;
+  const reportedText = `${Math.round(d.width * (d.dpr || 1))}×${Math.round(d.height * (d.dpr || 1))} (${ratioText(d.width, d.height)})`;
+  if (sh?.kind === 'pixels') {
+    const fits = sh.w <= d.width * (d.dpr || 1) + 1 && sh.h <= d.height * (d.dpr || 1) + 1;
+    return fits ? null : `This screen’s picture is ${reportedText}, smaller than the ${sh.w}×${sh.h} set for it.`;
+  }
+  const set = sh ? sh.w / sh.h : 16 / 9;
+  if (Math.abs(reported - set) / set < 0.03) return null;
+  return `This screen reports ${reportedText}, but it is set to ${sh ? ratioText(sh.w, sh.h) : '16:9'}. Content is letterboxed${sh ? '' : ' to fill the whole screen, set its shape under Edit'}.`;
+}
+
 // ---------- auth ----------
 function showLogin() {
   clearInterval(refreshTimer);
@@ -153,10 +204,15 @@ const securityLabel = (s) => {
   return h('span', { class: 'badge-inline', title: 'No add-on paired yet' }, 'Not paired');
 };
 
+function shotStyle(s) {
+  const v = viewShape(s.settings);
+  return `aspect-ratio: ${v.w} / ${v.h}; width: min(100%, ${Math.round((220 * v.w) / v.h)}px); margin: 0 auto;`;
+}
+
 function screenshotThumb(s) {
-  if (!s.screenshotAt) return h('div', { class: 'shot empty-shot' }, 'No screenshot yet');
+  if (!s.screenshotAt) return h('div', { class: 'shot empty-shot', style: shotStyle(s) }, 'No screenshot yet');
   const src = `/api/screens/${s.id}/screenshot.jpg?t=${encodeURIComponent(s.screenshotAt)}`;
-  return h('button', { class: 'shot', title: `Taken ${ago(s.screenshotAt)} – click to enlarge`, onclick: () => openModal(
+  return h('button', { class: 'shot', style: shotStyle(s), title: `Taken ${ago(s.screenshotAt)} – click to enlarge`, onclick: () => openModal(
     h('h1', {}, `${s.name} – screenshot`),
     h('img', { src, class: 'shot-full', alt: `What ${s.name} was showing` }),
     h('p', { class: 'hint' }, `Taken ${new Date(s.screenshotAt).toLocaleString()}. Screens send one every 5 minutes, after content changes, or when you click Screenshot.`),
@@ -196,7 +252,9 @@ async function screensView() {
         h('dt', {}, 'Up next'), h('dd', { title: (s.upcoming || []).map((u) => `${whenLabel(u.at)}: ${u.playlistName || 'nothing'}`).join('\n') },
           s.upcoming?.length ? `${s.upcoming[0].playlistName || 'nothing scheduled'} · ${whenLabel(s.upcoming[0].at)}` : '—'),
         h('dt', {}, 'Progress'), h('dd', {}, showing),
-        h('dt', {}, 'Display'), h('dd', {}, st.display ? `${st.display.width}×${st.display.height} · ${s.settings.orientation}${st.lowPower ? ' · low-power' : ''}` : s.settings.orientation),
+        h('dt', {}, 'Screen'), h('dd', {}, shapeLabel(s.settings),
+          st.display ? h('span', { class: 'muted' }, ` · picture ${Math.round(st.display.width * (st.display.dpr || 1))}×${Math.round(st.display.height * (st.display.dpr || 1))}${st.lowPower ? ' · low-power' : ''}`) : '',
+          shapeMismatch(s) ? h('div', { class: 'status-processing small-note' }, shapeMismatch(s)) : ''),
         h('dt', {}, 'Address'), h('dd', {}, st.ip || '—'),
         st.agent ? [h('dt', {}, 'Player'), h('dd', { title: `Signage agent ${st.agent.version}` },
           `${st.agent.model || 'Linux player'} · cache ${bytes(st.agent.cacheBytes || 0)}${st.agent.freeBytes != null ? `, ${bytes(st.agent.freeBytes)} free` : ''}${st.agent.diskFull ? ' · disk full' : ''}`)] : null,
@@ -310,7 +368,12 @@ async function preview(s) {
     h('div', { class: 'callout warn-callout' }, 'Preview links are not encrypted: anyone who can see the network traffic, or who has the link, can see the content. Use them for testing. Screens running the add-on are always end-to-end encrypted. “Unpair & reset access” (Edit) replaces these links; Settings can switch previews off.'),
     h('div', { class: 'modal-actions' },
       h('button', { onclick: closeModal }, 'Close'),
-      h('button', { class: 'primary', onclick: () => window.open(links.url, `preview-${s.id}`, 'width=960,height=540') }, 'Open here')));
+      h('button', { class: 'primary', onclick: () => {
+        // A window in the screen's shape (content after rotation), at most 960 px either way.
+        const v = viewShape(s.settings);
+        const scale = Math.min(960 / v.w, 960 / v.h);
+        window.open(links.url, `preview-${s.id}`, `width=${Math.round(v.w * scale)},height=${Math.round(v.h * scale)}`);
+      } }, 'Open here')));
 }
 
 function memberChecklist(items, selected, labelOf) {
@@ -337,7 +400,6 @@ function screenEditor(s, playlists, groups) {
     field('Default playlist', select(draft, 'defaultPlaylistId', [['', '— none (use group’s) —'], ...playlists.map((p) => [p.id, p.name])])),
     field('Time zone', h('input', { value: draft.timezone, list: 'tz-list', oninput: bind(draft, 'timezone') }),
       h('datalist', { id: 'tz-list' }, info.timezones.map((tz) => h('option', { value: tz })))),
-    field('Orientation', select(draft.settings, 'orientation', [['landscape', 'Landscape'], ['portrait', 'Portrait (rotate 90°)'], ['portrait-flipped', 'Portrait (rotate 270°)'], ['landscape-flipped', 'Landscape (upside down)']])),
     field('Fit', select(draft.settings, 'fit', [['contain', 'Fit (letterbox)'], ['cover', 'Fill (crop)']])),
     field('Transition', select(draft.settings, 'transition', [['fade', 'Cross-fade'], ['none', 'Cut']])),
     field('Background', h('input', { type: 'color', value: draft.settings.background || '#000000', oninput: bind(draft.settings, 'background') })),
@@ -376,6 +438,8 @@ function screenEditor(s, playlists, groups) {
     h('h1', {}, isNew ? 'Add screen' : `Edit ${s.name}`),
     s?.device && h('p', { class: 'hint' }, `🔒 Paired ${new Date(s.device.pairedAt).toLocaleString()} · ${browserName(s.device.userAgent)}`),
     form,
+    h('h2', {}, 'Screen shape and orientation'),
+    shapeEditor(draft.settings),
     h('h2', {}, 'Groups'),
     memberChecklist(groups, groupSet, (g) => g.name),
     h('h2', {}, 'When this screen loses its connection'),
@@ -389,6 +453,52 @@ function screenEditor(s, playlists, groups) {
     h('div', { class: 'modal-actions' }, ...danger, h('span', { class: 'spacer' }),
       h('button', { onclick: closeModal }, 'Cancel'),
       h('button', { class: 'primary', onclick: save }, isNew ? 'Add screen' : 'Save')));
+}
+
+// Shape (16:9 unless set), orientation and a live picture of what viewers get.
+function shapeEditor(settings) {
+  let key = shapeKey(settings.shape);
+  const custom = { w: settings.shape?.kind === 'ratio' ? settings.shape.w : 32, h: settings.shape?.kind === 'ratio' ? settings.shape.h : 9 };
+  const px = settings.shape?.kind === 'pixels' ? { ...settings.shape } : { w: 3840, h: 1080, anchor: 'top-left' };
+  let portrait = isPortrait(settings);
+  let flipped = /flipped$/.test(settings.orientation || '');
+  const sample = h('div', { class: 'shape-sample' });
+  const sampleText = h('div', { class: 'hint' });
+  const sync = () => {
+    if (key === '16:9') delete settings.shape;
+    else if (key === 'custom') settings.shape = { kind: 'ratio', w: Number(custom.w) || 0, h: Number(custom.h) || 0 };
+    else if (key === 'pixels') settings.shape = { kind: 'pixels', w: Number(px.w) || 0, h: Number(px.h) || 0, anchor: px.anchor };
+    else { const [w, h2] = key.split(':').map(Number); settings.shape = { kind: 'ratio', w, h: h2 }; }
+    settings.orientation = portrait ? (flipped ? 'portrait-flipped' : 'portrait') : (flipped ? 'landscape-flipped' : 'landscape');
+    customRow.hidden = key !== 'custom';
+    pixelsRow.hidden = key !== 'pixels';
+    const v = viewShape(settings);
+    const ok = v.w > 0 && v.h > 0;
+    sample.style.aspectRatio = ok ? `${v.w} / ${v.h}` : '16 / 9';
+    sample.style.width = ok ? `min(100%, ${Math.round((150 * v.w) / v.h)}px)` : '';
+    sample.textContent = ok ? (settings.shape?.kind === 'pixels' ? `${v.w}×${v.h}` : ratioText(v.w, v.h)) : '?';
+    sampleText.textContent = ok ? `Content for this screen: ${shapeLabel(settings)}. Pictures and videos of another shape are fitted or cropped (Fit setting above).` : '';
+  };
+  const num = (obj, k, attrs = {}) => h('input', { type: 'number', min: 1, step: 'any', value: obj[k], style: 'width:90px', ...attrs, oninput: (e) => { obj[k] = e.target.value; sync(); } });
+  const customRow = h('div', { class: 'input-row' }, num(custom, 'w'), h('span', {}, ':'), num(custom, 'h'), h('span', { class: 'hint' }, 'e.g. 32 : 9, or 2.39 : 1'));
+  const pixelsRow = h('div', {},
+    h('div', { class: 'input-row' }, num(px, 'w', { step: 1 }), h('span', {}, '×'), num(px, 'h', { step: 1 }), h('span', { class: 'hint' }, 'pixels, as the screen is built (before turning it)')),
+    h('label', {}, 'Where the screen’s picture is', h('select', { onchange: (e) => { px.anchor = e.target.value; sync(); } },
+      [['top-left', 'Top-left of the computer’s picture (usual for LED walls)'], ['center', 'In the middle of the computer’s picture']]
+        .map(([v, t]) => h('option', { value: v, selected: px.anchor === v }, t)))));
+  const radio = (checked, label, value) => h('label', { class: 'inline' }, h('input', { type: 'radio', name: 'orientation', checked, onchange: () => { portrait = value; sync(); } }), label);
+  const node = h('div', { class: 'shape-editor' },
+    h('div', {},
+      h('label', {}, 'Shape', h('select', { onchange: (e) => { key = e.target.value; sync(); } },
+        SHAPES.map(([v, t]) => h('option', { value: v, selected: key === v }, t)))),
+      customRow, pixelsRow,
+      h('div', { class: 'field-label' }, 'Orientation'),
+      h('div', { class: 'segmented' }, radio(!portrait, 'Landscape', false), radio(portrait, 'Portrait', true)),
+      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: flipped, onchange: (e) => { flipped = e.target.checked; sync(); } }), 'Turned the other way round'),
+      h('p', { class: 'hint' }, 'Portrait: the screen stands on its side and the player turns the content. If the computer’s own display settings already turn the picture, choose Landscape. Tick “other way round” if content shows upside down.')),
+    h('div', { class: 'shape-preview' }, sample, sampleText));
+  sync();
+  return node;
 }
 
 function pairDialog(code, screens, groups, playlists) {

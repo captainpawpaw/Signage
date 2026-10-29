@@ -44,7 +44,29 @@ function cleanSettings(input = {}) {
   if (['fade', 'none'].includes(input.transition)) out.transition = input.transition;
   if (/^#[0-9a-f]{3,8}$/i.test(input.background || '')) out.background = input.background;
   if (['auto', 'low', 'standard'].includes(input.power)) out.power = input.power;
+  const shape = cleanShape(input.shape);
+  if (shape) out.shape = shape;
   return out;
+}
+
+// The screen's shape before rotation: a ratio (32:9) or exact pixels (an LED
+// wall showing part of the computer's picture). None means standard 16:9.
+function cleanShape(shape) {
+  if (!shape || typeof shape !== 'object') return null;
+  const w = Number(shape.w);
+  const h = Number(shape.h);
+  if (shape.kind === 'ratio') {
+    if (!(w > 0 && h > 0 && w <= 100000 && h <= 100000)) throw new HttpError(400, 'Enter a ratio like 32 : 9 (or a size like 3840 : 1080)');
+    const round = (n) => Math.round(n * 1000) / 1000;
+    if (Math.abs(w / h - 16 / 9) < 0.0005) return null; // standard
+    return { kind: 'ratio', w: round(w), h: round(h) };
+  }
+  if (shape.kind === 'pixels') {
+    const ok = (n) => Number.isInteger(n) && n >= 64 && n <= 16384;
+    if (!ok(w) || !ok(h)) throw new HttpError(400, 'Enter the size in whole pixels, between 64 and 16384');
+    return { kind: 'pixels', w, h, anchor: shape.anchor === 'center' ? 'center' : 'top-left' };
+  }
+  return null;
 }
 
 function cleanSchedule(rules = []) {

@@ -95,6 +95,19 @@ fullscreen.
 - **Screenshots.** The console shows what each screen is actually displaying.
   Screens send a screenshot every 5 minutes, after content changes, and when
   you ask for one.
+- **Screen shape and orientation.** Screens are 16:9 unless set otherwise.
+  In a screen's settings, choose a common shape (16:10, 21:9, 32:9, 4:3, 1:1),
+  a custom ratio (e.g. 2.39 : 1 or 3840 : 1080), or an exact size in pixels.
+  Exact pixels are for LED walls whose controller shows only part of the
+  computer's picture: the player uses that area, top-left by default. Then
+  choose **Landscape** or **Portrait**: a 32:9 screen turned to portrait shows
+  9:32 content, and the player turns it. **Turned the other way round** fixes
+  upside-down content.
+  - The player lays content out in exactly that shape, letterboxed if the
+    computer's picture has a different shape.
+  - Screenshots and preview windows in the console use the screen's shape.
+  - A screen card warns when the screen reports a picture of a different
+    shape than it is set to.
 - **Remote control.** You can set each screen's orientation, fit, transition
   and background colour. You can tell a screen to Identify, Skip or Reload. The
   console shows live status: online or offline, encrypted or not, what is

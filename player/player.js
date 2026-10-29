@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.4.0';
+  const PLAYER_VERSION = '2.5.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -335,12 +335,55 @@
     sendStatus();
   }
 
+  let currentSettings = {};
   function applySettings(s) {
+    currentSettings = s;
     lowPower = isLowPower(s);
     stage.className = [s.orientation || 'landscape', s.transition === 'none' || lowPower ? '' : 'fade'].join(' ');
     stage.style.setProperty('--bg', s.background || '#000');
     stage.style.setProperty('--fit', s.fit || 'contain');
+    layoutStage();
   }
+
+  // Screens set to a shape other than standard (e.g. a 32:9 bar screen) get a
+  // stage of exactly that shape, letterboxed inside the window if it differs.
+  // "Exact pixels" places it at the top-left of the picture by default: LED
+  // wall controllers often show only that part of the computer's output.
+  // The shape is the screen's own, before rotation: a 32:9 screen turned to
+  // portrait shows content at 9:32.
+  const ROTATION = { landscape: 0, portrait: 90, 'portrait-flipped': -90, 'landscape-flipped': 180 };
+  function layoutStage() {
+    const shape = currentSettings.shape;
+    for (const p of ['left', 'top', 'width', 'height', 'transform', 'inset']) stage.style.removeProperty(p);
+    if (!shape) return; // standard screens: the stylesheet fills the window
+    const rot = ROTATION[currentSettings.orientation] || 0;
+    const sideways = Math.abs(rot) === 90;
+    const W = innerWidth;
+    const H = innerHeight;
+    let bw; let bh; // the screen's area of the window, before rotation
+    if (shape.kind === 'pixels') {
+      const dpr = devicePixelRatio || 1;
+      bw = shape.w / dpr;
+      bh = shape.h / dpr;
+    } else {
+      const r = shape.w / shape.h;
+      bw = Math.min(W, H * r);
+      bh = bw / r;
+    }
+    const topLeft = shape.kind === 'pixels' && shape.anchor !== 'center';
+    const cx = topLeft ? bw / 2 : W / 2;
+    const cy = topLeft ? bh / 2 : H / 2;
+    const cw = sideways ? bh : bw; // the content's own frame
+    const ch = sideways ? bw : bh;
+    Object.assign(stage.style, { inset: 'auto', width: `${cw}px`, height: `${ch}px` });
+    if (rot) {
+      Object.assign(stage.style, { left: `${cx}px`, top: `${cy}px`, transform: `translate(-50%, -50%) rotate(${rot}deg)` });
+    } else {
+      // No transform at all: keeps the hardware video path on TV sticks.
+      Object.assign(stage.style, { left: `${cx - cw / 2}px`, top: `${cy - ch / 2}px`, transform: 'none' });
+    }
+  }
+  addEventListener('resize', layoutStage);
 
   async function forgetContent() {
     manifest = null;

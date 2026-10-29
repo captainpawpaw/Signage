@@ -16,7 +16,7 @@ const EXTENSION_FILES = ['background.js', 'icon-48.png', 'icon-128.png'];
 const SCREEN_SETUP_FILES = ['setup-screen.bat', 'setup-screen.ps1', 'update-addon.ps1'];
 
 // Bump whenever player/ or extension/ changes so installed add-ons update.
-export const ADDON_VERSION = '2.4.0';
+export const ADDON_VERSION = '2.5.0';
 
 export function addonId(keys) {
   return extensionId(keys.addonPub);

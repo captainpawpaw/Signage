@@ -187,3 +187,12 @@ td div.mini-thumb .tv-glyph { font-size: 18px; }
 .play-now-row strong { color: #dc2626; }
 .picker-controls select { width: auto; flex: 0 1 240px; }
 .picker-controls > .muted { white-space: nowrap; }
+
+/* Screen shape */
+.shape-editor { display: grid; grid-template-columns: 1fr 200px; gap: 16px; align-items: start; }
+.shape-preview { display: grid; gap: 8px; justify-items: center; }
+.shape-sample { background: #111827; color: #fff; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; max-height: 180px; outline: 3px solid #374151; }
+.small-note { font-size: 12px; margin-top: 2px; }
+@media (max-width: 640px) { .shape-editor { grid-template-columns: 1fr; } }
+.screen-card { align-content: start; }
+.empty-shot { text-align: center; padding: 4px; box-sizing: border-box; font-size: 12px; }

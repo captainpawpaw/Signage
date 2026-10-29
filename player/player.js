@@ -339,7 +339,7 @@
   function applySettings(s) {
     currentSettings = s;
     lowPower = isLowPower(s);
-    stage.className = [s.orientation || 'landscape', s.transition === 'none' || lowPower ? '' : 'fade'].join(' ');
+    stage.className = [orientation(), s.transition === 'none' || lowPower ? '' : 'fade'].join(' ');
     stage.style.setProperty('--bg', s.background || '#000');
     stage.style.setProperty('--fit', s.fit || 'contain');
     layoutStage();
@@ -352,21 +352,34 @@
   // The shape is the screen's own, before rotation: a 32:9 screen turned to
   // portrait shows content at 9:32.
   const ROTATION = { landscape: 0, portrait: 90, 'portrait-flipped': -90, 'landscape-flipped': 180 };
+  // Portrait screens: when the computer's picture already stands upright (its
+  // display settings turn it), the content must not be turned a second time.
+  function orientation() {
+    const o = currentSettings.orientation || 'landscape';
+    return o.startsWith('portrait') && innerHeight > innerWidth ? 'landscape' : o;
+  }
   function layoutStage() {
+    stage.classList.remove(...Object.keys(ROTATION));
+    stage.classList.add(orientation());
     const shape = currentSettings.shape;
     for (const p of ['left', 'top', 'width', 'height', 'transform', 'inset']) stage.style.removeProperty(p);
     if (!shape) return; // standard screens: the stylesheet fills the window
-    const rot = ROTATION[currentSettings.orientation] || 0;
+    const rot = ROTATION[orientation()] || 0;
     const sideways = Math.abs(rot) === 90;
     const W = innerWidth;
     const H = innerHeight;
+    // A portrait screen whose picture the computer already turned: the shape
+    // stands upright in the window too.
+    const upright = (currentSettings.orientation || '').startsWith('portrait') && !sideways;
+    const sw = upright ? shape.h : shape.w;
+    const sh = upright ? shape.w : shape.h;
     let bw; let bh; // the screen's area of the window, before rotation
     if (shape.kind === 'pixels') {
       const dpr = devicePixelRatio || 1;
-      bw = shape.w / dpr;
-      bh = shape.h / dpr;
+      bw = sw / dpr;
+      bh = sh / dpr;
     } else {
-      const r = shape.w / shape.h;
+      const r = sw / sh;
       bw = Math.min(W, H * r);
       bh = bw / r;
     }

@@ -101,8 +101,10 @@ fullscreen.
   Exact pixels are for LED walls whose controller shows only part of the
   computer's picture: the player uses that area, top-left by default. Then
   choose **Landscape** or **Portrait**: a 32:9 screen turned to portrait shows
-  9:32 content, and the player turns it. **Turned the other way round** fixes
-  upside-down content.
+  9:32 content. The player turns the content only when the computer's picture
+  isn't already upright, so it doesn't matter whether the computer's display
+  settings turn it. If content shows upside down, **Content upside down?**
+  turns it the other way.
   - The player lays content out in exactly that shape, letterboxed if the
     computer's picture has a different shape.
   - Screenshots and preview windows in the console use the screen's shape.

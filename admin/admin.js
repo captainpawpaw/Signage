@@ -135,7 +135,9 @@ function shapeMismatch(s) {
     return fits ? null : `This screen’s picture is ${reportedText}, smaller than the ${sh.w}×${sh.h} set for it.`;
   }
   const set = sh ? sh.w / sh.h : 16 / 9;
-  if (Math.abs(reported - set) / set < 0.03) return null;
+  // Portrait screens may get a picture the computer already turned upright.
+  const expected = isPortrait(s.settings) ? [set, 1 / set] : [set];
+  if (expected.some((r) => Math.abs(reported - r) / r < 0.03)) return null;
   return `This screen reports ${reportedText}, but it is set to ${sh ? ratioText(sh.w, sh.h) : '16:9'}. Content is letterboxed${sh ? '' : ' to fill the whole screen, set its shape under Edit'}.`;
 }
 
@@ -494,8 +496,10 @@ function shapeEditor(settings) {
       customRow, pixelsRow,
       h('div', { class: 'field-label' }, 'Orientation'),
       h('div', { class: 'segmented' }, radio(!portrait, 'Landscape', false), radio(portrait, 'Portrait', true)),
-      h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: flipped, onchange: (e) => { flipped = e.target.checked; sync(); } }), 'Turned the other way round'),
-      h('p', { class: 'hint' }, 'Portrait: the screen stands on its side and the player turns the content. If the computer’s own display settings already turn the picture, choose Landscape. Tick “other way round” if content shows upside down.')),
+      h('p', { class: 'hint' }, 'Portrait: the screen stands on its side. The player turns the content when needed, whatever the computer’s display settings.'),
+      h('details', { class: 'small-details', open: flipped },
+        h('summary', {}, 'Content upside down?'),
+        h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: flipped, onchange: (e) => { flipped = e.target.checked; sync(); } }), 'Turn it the other way round'))),
     h('div', { class: 'shape-preview' }, sample, sampleText));
   sync();
   return node;

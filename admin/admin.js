@@ -66,9 +66,17 @@ function openModal(...content) {
 const closeModal = () => modal.close();
 
 const isChannel = (m) => m?.type === 'stream';
+const isBoard = (m) => m?.type === 'board';
+// Photos uploaded through a board's editor belong to that board.
+const libraryMedia = (list) => list.filter((m) => !m.ownerBoardId);
 
 function thumb(media) {
   if (!media) return h('div', { class: 'thumb' }, 'missing');
+  if (isBoard(media)) {
+    const box = h('div', { class: 'thumb board-thumb' }, h('span', { class: 'badge board' }, 'board'));
+    requestAnimationFrame(() => drawBoardInto(box, media));
+    return box;
+  }
   if (isChannel(media)) {
     return h('div', { class: 'thumb channel-thumb' },
       media.logo ? h('img', { src: media.logo, loading: 'lazy', alt: '', referrerpolicy: 'no-referrer', onerror: (e) => e.target.replaceWith(h('span', { class: 'tv-glyph' }, '📺')) })
@@ -172,6 +180,8 @@ const routes = [
   [/^#\/schedule\/(screen|group)\/(.+)$/, (kind, sid) => scheduleView(kind, sid)],
   [/^#\/media$/, mediaView],
   [/^#\/channels$/, channelsView],
+  [/^#\/boards$/, boardsView],
+  [/^#\/boards\/(.+)$/, boardDesigner],
   [/^#\/playlists$/, playlistsView],
   [/^#\/playlists\/(.+)$/, playlistEditor],
   [/^#\/settings$/, settingsView],
@@ -679,7 +689,7 @@ function groupEditor(g, screens, playlists) {
 
 // ---------- media ----------
 async function mediaView() {
-  const media = (await api('GET', '/api/media')).filter((m) => !isChannel(m));
+  const media = libraryMedia(await api('GET', '/api/media')).filter((m) => !isChannel(m) && !isBoard(m));
   const fileInput = h('input', { type: 'file', multiple: true, hidden: true, accept: 'image/*,video/*,.pdf,.ppt,.pptx,.pps,.ppsx,.odp,.key', onchange: (e) => uploadFiles(e.target.files) });
   const decksNote = info.converters.office ? 'PDF and PowerPoint/ODP decks are converted to slides.'
     : info.converters.pdf ? 'PDF decks are converted to slides (install LibreOffice for PowerPoint).' : 'Install poppler-utils on the server to upload PDF decks.';
@@ -871,8 +881,9 @@ function overlayEditor(draft, media) {
 
 // Media and channel picker with search, for long channel lists.
 function mediaPicker(media, { onPick, picked = () => 0, label = (m) => m.name }) {
-  const ready = [...media].reverse().filter((m) => m.status === 'ready');
-  const hasBoth = ready.some(isChannel) && ready.some((m) => !isChannel(m));
+  const ready = [...libraryMedia(media)].reverse().filter((m) => m.status === 'ready');
+  const kindOf = (m) => (isChannel(m) ? 'live' : isBoard(m) ? 'boards' : 'files');
+  const kinds = new Set(ready.map(kindOf));
   let query = '';
   let kind = 'all';
   const LIMIT = 120;
@@ -880,7 +891,7 @@ function mediaPicker(media, { onPick, picked = () => 0, label = (m) => m.name })
   const more = h('p', { class: 'hint' });
   const render = () => {
     const q = query.trim().toLowerCase();
-    const list = ready.filter((m) => (kind === 'all' || (kind === 'live') === isChannel(m))
+    const list = ready.filter((m) => (kind === 'all' || kind === kindOf(m))
       && (!q || m.name.toLowerCase().includes(q) || (m.group || '').toLowerCase().includes(q)));
     grid.replaceChildren(...list.slice(0, LIMIT).map((m) => {
       const n = picked(m);
@@ -892,9 +903,296 @@ function mediaPicker(media, { onPick, picked = () => 0, label = (m) => m.name })
   return h('div', {},
     h('div', { class: 'picker-controls' },
       h('input', { type: 'search', placeholder: 'Search by name or group', oninput: (e) => { query = e.target.value; render(); } }),
-      hasBoth ? h('select', { onchange: (e) => { kind = e.target.value; render(); } },
-        h('option', { value: 'all' }, 'Everything'), h('option', { value: 'files' }, 'Images, videos, decks'), h('option', { value: 'live' }, 'TV channels')) : ''),
+      kinds.size > 1 ? h('select', { onchange: (e) => { kind = e.target.value; render(); } },
+        h('option', { value: 'all' }, 'Everything'),
+        [['files', 'Images, videos, decks'], ['live', 'TV channels'], ['boards', 'Boards']].filter(([k]) => kinds.has(k)).map(([k, t]) => h('option', { value: k }, t))) : ''),
     grid, more);
+}
+
+// ---------- boards ----------
+// A board's view for the renderer. sample: show field names where content is
+// missing (designing), so every box is visible.
+function boardView(b, { sample = false, values = null } = {}) {
+  const step = b.steps?.[b.step];
+  const v = values || { ...b.values, ...(step?.values || {}) };
+  return {
+    aspect: b.aspect,
+    background: { color: b.background?.color, image: b.background?.mediaId ? { mediaId: b.background.mediaId } : null },
+    fields: b.fields.map((f) => {
+      let value = v[f.id];
+      if (f.kind === 'image') value = value ? { mediaId: value } : null;
+      else if (value === undefined || value === '' || (Array.isArray(value) && !value.length)) {
+        value = !sample ? (f.kind === 'list' ? [] : '') : f.kind === 'list' ? [['Item', '0.00'], ['Item', '0.00'], ['Item', '0.00']].map((r) => r.slice(0, f.style.columns || 2)) : f.name;
+      }
+      return { ...f, value };
+    }),
+  };
+}
+function drawBoardInto(box, b, opts = {}) {
+  box.querySelector('.signage-board')?.remove();
+  return self.SignageBoard.render(box, boardView(b, opts), (img) => `/api/boards/${b.id}/media/${img.mediaId}`);
+}
+const boardEditorHref = (b) => `/admin/board-edit.html#board=${encodeURIComponent(b.id)}`;
+
+async function boardsView() {
+  const boards = await api('GET', '/api/boards');
+  const card = (b) => {
+    const box = h('div', { class: 'board-card-preview', style: `aspect-ratio: ${b.aspect[0]} / ${b.aspect[1]}` });
+    requestAnimationFrame(() => drawBoardInto(box, b, { sample: true }));
+    return h('div', { class: 'card board-card' }, box,
+      h('div', { class: 'screen-head' }, h('h3', {}, b.name),
+        h('span', { class: 'muted' }, `${b.fields.length} field${b.fields.length === 1 ? '' : 's'}${b.steps.length ? ` · ${b.steps.length} steps` : ''}`)),
+      b.steps.length ? h('div', { class: 'hint' }, b.step >= 0 ? `On screen: step ${b.step + 1}, ${b.steps[b.step].title}` : 'On screen: the main board') : '',
+      h('div', { class: 'actions' },
+        h('a', { class: 'btn small primary', href: boardEditorHref(b), target: '_blank', rel: 'noopener' }, 'Change content'),
+        h('a', { class: 'btn small', href: `#/boards/${b.id}` }, 'Design'),
+        h('button', { class: 'small', onclick: guard(() => editorLinkDialog(b)) }, 'Editor link'),
+        h('button', { class: 'small', onclick: guard(() => playNowDialog({ channel: b })) }, 'Play on…'),
+        h('button', { class: 'small danger', onclick: guard(async () => {
+          if (!confirm(`Delete board “${b.name}”? It is removed from every playlist and its editor link stops working.`)) return;
+          await api('DELETE', `/api/media/${b.id}`);
+          boardsView();
+        }) }, '✕')));
+  };
+  view.replaceChildren(
+    h('div', { class: 'toolbar' }, h('h1', {}, 'Boards'), h('button', { class: 'primary', onclick: guard(newBoardDialog) }, '+ New board')),
+    boards.length ? h('div', { class: 'grid' }, boards.map(card)) : h('div', { class: 'card empty' },
+      h('p', {}, 'No boards yet.'),
+      h('p', {}, 'A board is your own design (an image made in Canva, PowerPoint or Photoshop, or a plain colour) with text, photo and list boxes on it whose content you change at any time, from a phone or laptop: prices, menus, today’s specials, award winners. Add a board to a playlist or the Schedule like any media.')),
+    h('p', { class: 'hint' }, 'Tip: design the background without the changing parts (no prices or names in the picture); the board adds those on top.'));
+}
+
+// Picture size of an uploaded image, to give the board the same shape.
+const imageSize = (mediaId, file) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => resolve([img.naturalWidth, img.naturalHeight]);
+  img.onerror = () => resolve(null);
+  img.src = `/files/${file}`;
+});
+
+async function newBoardDialog() {
+  const media = libraryMedia(await api('GET', '/api/media')).filter((m) => m.type === 'image' && m.status === 'ready');
+  const draft = { name: '', mediaId: '', aspect: '16:9', color: '#111827' };
+  const file = h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: guard(async (e) => {
+    const fd = new FormData();
+    fd.append('files', e.target.files[0]);
+    const { created } = await api('POST', '/api/media', fd);
+    if (!created[0]) return toast('That file could not be used');
+    media.push(created[0]);
+    draft.mediaId = created[0].id;
+    select.replaceChildren(...options());
+    shapeRow.hidden = true;
+  }) });
+  const options = () => [h('option', { value: '' }, 'No picture: a plain colour'), ...[...media].reverse().map((m) => h('option', { value: m.id, selected: m.id === draft.mediaId }, m.name))];
+  const select = h('select', { onchange: (e) => { draft.mediaId = e.target.value; shapeRow.hidden = Boolean(draft.mediaId); } }, options());
+  const shapeRow = h('div', { class: 'form-grid' },
+    h('label', {}, 'Shape', h('select', { onchange: (e) => { draft.aspect = e.target.value; } },
+      ['16:9', '9:16', '4:3', '21:9', '32:9', '1:1'].map((v) => h('option', { value: v }, v === '9:16' ? '9:16 (portrait)' : v)))),
+    h('label', {}, 'Colour', h('input', { type: 'color', value: draft.color, oninput: (e) => { draft.color = e.target.value; } })));
+  const create = guard(async () => {
+    let aspect = draft.aspect.split(':').map(Number);
+    const bg = media.find((m) => m.id === draft.mediaId);
+    if (bg) aspect = (await imageSize(bg.id, bg.file)) || aspect;
+    const b = await api('POST', '/api/boards', { name: draft.name || 'Board', background: { mediaId: draft.mediaId || null, color: draft.color }, aspect, fields: [] });
+    closeModal();
+    location.hash = `#/boards/${b.id}`;
+  });
+  openModal(
+    h('h1', {}, 'New board'),
+    h('label', {}, 'Name', h('input', { placeholder: 'e.g. Bar prices, Awards 2026', oninput: (e) => { draft.name = e.target.value; } })),
+    h('label', {}, 'Background picture (your design)', h('div', { class: 'input-row' }, select, h('button', { onclick: () => file.click() }, 'Upload…'), file),
+      h('span', { class: 'hint' }, 'The board takes the shape of the picture. Leave out what will change: the board adds text and photos on top.')),
+    shapeRow,
+    h('div', { class: 'modal-actions' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: create }, 'Create and design')));
+}
+
+async function boardDesigner(id) {
+  const [b, media] = await Promise.all([api('GET', `/api/boards/${id}`), api('GET', '/api/media')]);
+  const images = libraryMedia(media).filter((m) => m.type === 'image' && m.status === 'ready');
+  const draft = structuredClone(b);
+  let selected = draft.fields[0]?.id || null;
+  let dirty = false;
+  const canvas = h('div', { class: 'designer-canvas' });
+  const stageBox = h('div', { class: 'designer-board' });
+  const boxes = h('div', { class: 'designer-boxes' });
+  const panel = h('div', { class: 'designer-panel' });
+  canvas.append(stageBox);
+  let rendered = null;
+
+  const touch = () => { dirty = true; saveBtn.textContent = 'Save design •'; };
+  const fieldById = (fid) => draft.fields.find((f) => f.id === fid);
+
+  // The board and one draggable box per field, laid over it.
+  function paintBoard() {
+    const [aw, ah] = draft.aspect;
+    stageBox.style.aspectRatio = `${aw} / ${ah}`;
+    rendered?.destroy();
+    rendered = self.SignageBoard.render(stageBox, boardView(draft, { sample: true }), (img) => `/api/boards/${draft.id}/media/${img.mediaId}`);
+    boxes.replaceChildren(...draft.fields.map((f) => {
+      const handle = h('span', { class: 'resize' });
+      const box = h('div', { class: `field-box ${f.id === selected ? 'selected' : ''}`, title: f.name },
+        h('span', { class: 'field-label' }, f.name), handle);
+      Object.assign(box.style, { left: `${f.x * 100}%`, top: `${f.y * 100}%`, width: `${f.w * 100}%`, height: `${f.h * 100}%` });
+      box.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        if (selected !== f.id) { selected = f.id; paintPanel(); }
+        boxes.querySelectorAll('.field-box').forEach((x) => x.classList.toggle('selected', x === box));
+        const rect = boxes.getBoundingClientRect();
+        const start = { x: e.clientX, y: e.clientY, fx: f.x, fy: f.y, fw: f.w, fh: f.h };
+        const resizing = e.target === handle;
+        box.setPointerCapture(e.pointerId);
+        const move = (ev) => {
+          const dx = (ev.clientX - start.x) / rect.width;
+          const dy = (ev.clientY - start.y) / rect.height;
+          if (resizing) {
+            f.w = Math.min(1 - f.x, Math.max(0.02, start.fw + dx));
+            f.h = Math.min(1 - f.y, Math.max(0.02, start.fh + dy));
+          } else {
+            f.x = Math.min(1 - f.w, Math.max(0, start.fx + dx));
+            f.y = Math.min(1 - f.h, Math.max(0, start.fy + dy));
+          }
+          Object.assign(box.style, { left: `${f.x * 100}%`, top: `${f.y * 100}%`, width: `${f.w * 100}%`, height: `${f.h * 100}%` });
+        };
+        const up = () => {
+          box.removeEventListener('pointermove', move);
+          box.removeEventListener('pointerup', up);
+          touch();
+          paintBoard();
+        };
+        box.addEventListener('pointermove', move);
+        box.addEventListener('pointerup', up);
+      });
+      return box;
+    }));
+    stageBox.append(boxes);
+  }
+
+  const addField = (kind) => {
+    const n = draft.fields.filter((f) => f.kind === kind).length + 1;
+    const w = kind === 'list' ? 0.45 : kind === 'image' ? 0.25 : 0.5;
+    const hgt = kind === 'list' ? 0.6 : kind === 'image' ? 0.35 : 0.14;
+    // Each new box a little further down and right, so none hides another.
+    const step = (draft.fields.length % 6) * 0.06;
+    const f = {
+      id: crypto.randomUUID(), kind, name: `${{ text: 'Text', image: 'Photo', list: 'Price list' }[kind]} ${n}`,
+      x: Math.min(0.08 + step, 1 - w), y: Math.min(0.08 + step, 1 - hgt), w, h: hgt,
+      style: { size: kind === 'list' ? 5 : 9, color: '#ffffff', align: 'left', valign: kind === 'list' ? 'top' : 'middle', font: 'sans', bold: kind === 'text', shadow: false, fit: 'cover', columns: 2, header: '' },
+    };
+    draft.fields.push(f);
+    selected = f.id;
+    touch();
+    paintBoard();
+    paintPanel();
+  };
+
+  function paintPanel() {
+    const f = fieldById(selected);
+    const set = (k, v) => { f.style[k] = v; touch(); paintBoard(); };
+    const sel = (value, opts, on) => h('select', { onchange: (e) => on(e.target.value) }, opts.map(([v, t]) => h('option', { value: v, selected: v === value }, t)));
+    const props = !f ? h('p', { class: 'hint' }, 'Add a text, photo or list box, then drag it into place on the board. Drag the corner to resize.') : h('div', { class: 'field-props' },
+      h('label', {}, 'Name (shown to editors)', h('input', { value: f.name, oninput: (e) => { f.name = e.target.value; touch(); }, onchange: () => paintBoard() })),
+      f.kind !== 'image' ? [
+        h('div', { class: 'form-grid' },
+          h('label', {}, 'Text size', h('input', { type: 'number', min: 1, max: 50, step: 0.5, value: f.style.size, oninput: (e) => set('size', Number(e.target.value) || 8) }),
+            h('span', { class: 'hint' }, '% of the board’s height; long text shrinks to fit')),
+          h('label', {}, 'Colour', h('input', { type: 'color', value: f.style.color, oninput: (e) => set('color', e.target.value) }))),
+        h('div', { class: 'form-grid' },
+          h('label', {}, 'Font', sel(f.style.font, [['sans', 'Clean (sans-serif)'], ['serif', 'Classic (serif)'], ['condensed', 'Narrow'], ['mono', 'Typewriter']], (v) => set('font', v))),
+          h('label', {}, 'Align', sel(f.style.align, [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']], (v) => set('align', v))),
+          h('label', {}, 'Vertical', sel(f.style.valign, [['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], (v) => set('valign', v)))),
+        h('div', { class: 'row-checks' },
+          h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: f.style.bold, onchange: (e) => set('bold', e.target.checked) }), 'Bold'),
+          h('label', { class: 'inline' }, h('input', { type: 'checkbox', checked: f.style.shadow, onchange: (e) => set('shadow', e.target.checked) }), 'Shadow (readable on photos)')),
+      ] : h('label', {}, 'Photo', sel(f.style.fit, [['cover', 'Fill the box (crop)'], ['contain', 'Show all of it']], (v) => set('fit', v))),
+      f.kind === 'list' ? h('div', { class: 'form-grid' },
+        h('label', {}, 'Columns', sel(String(f.style.columns || 2), [['1', '1 (just items)'], ['2', '2 (item, price)'], ['3', '3']], (v) => set('columns', Number(v)))),
+        h('label', {}, 'Column headings (optional)', h('input', { value: f.style.header || '', placeholder: 'Item | Price', oninput: (e) => set('header', e.target.value) }))) : '',
+      h('button', { class: 'danger small', onclick: () => {
+        if (!confirm(`Remove “${f.name}”? Its content goes too.`)) return;
+        draft.fields = draft.fields.filter((x) => x !== f);
+        selected = draft.fields[0]?.id || null;
+        touch();
+        paintBoard();
+        paintPanel();
+      } }, 'Remove this box'));
+    panel.replaceChildren(
+      h('div', { class: 'card' },
+        h('h2', {}, 'Add'),
+        h('div', { class: 'actions' },
+          h('button', { onclick: () => addField('text') }, '+ Text'),
+          h('button', { onclick: () => addField('image') }, '+ Photo'),
+          h('button', { onclick: () => addField('list') }, '+ Price list')),
+        draft.fields.length ? h('div', { class: 'field-list' }, draft.fields.map((x) => h('button', {
+          class: `small ${x.id === selected ? 'primary' : ''}`, onclick: () => { selected = x.id; paintBoard(); paintPanel(); },
+        }, `${{ text: 'T', image: '🖼', list: '☰' }[x.kind]} ${x.name}`))) : ''),
+      h('div', { class: 'card' }, h('h2', {}, f ? `Box: ${f.name}` : 'Boxes'), props),
+      h('div', { class: 'card' },
+        h('h2', {}, 'Board'),
+        h('label', {}, 'Name', h('input', { value: draft.name, oninput: (e) => { draft.name = e.target.value; touch(); } })),
+        h('label', {}, 'Background picture', sel(draft.background.mediaId || '', [['', 'None (plain colour)'], ...[...images].reverse().map((m) => [m.id, m.name])], async (v) => {
+          draft.background.mediaId = v || null;
+          const m = images.find((x) => x.id === v);
+          if (m) draft.aspect = (await imageSize(m.id, m.file)) || draft.aspect;
+          touch();
+          paintBoard();
+        })),
+        h('label', {}, 'Background colour', h('input', { type: 'color', value: draft.background.color || '#111827', oninput: (e) => { draft.background.color = e.target.value; touch(); paintBoard(); } }))));
+  }
+
+  const saveBtn = h('button', { class: 'primary', onclick: guard(async () => {
+    const saved = await api('PUT', `/api/boards/${id}`, { name: draft.name, background: draft.background, aspect: draft.aspect, fields: draft.fields });
+    Object.assign(draft, { fields: saved.fields });
+    dirty = false;
+    saveBtn.textContent = 'Save design';
+    toast('Saved — screens showing this board update now');
+  }) }, 'Save design');
+
+  view.replaceChildren(
+    h('div', { class: 'toolbar' },
+      h('h1', {}, h('a', { href: '#/boards' }, 'Boards'), ' / ', draft.name),
+      h('a', { class: 'btn', href: boardEditorHref(draft), target: '_blank', rel: 'noopener', onclick: (e) => { if (dirty && !confirm('Save the design first? Unsaved boxes are not in the editor yet.')) e.preventDefault(); } }, 'Change content'),
+      h('button', { onclick: guard(() => editorLinkDialog(draft)) }, 'Editor link'),
+      saveBtn),
+    h('div', { class: 'designer' }, canvas, panel));
+  paintBoard();
+  paintPanel();
+  window.addEventListener('hashchange', () => { if (dirty) toast('The board design was not saved'); }, { once: true });
+}
+
+// The private link for changing a board's content from a phone, with QR code and optional PIN.
+async function editorLinkDialog(b) {
+  let link = await api('POST', `/api/boards/${b.id}/editor-link`, {});
+  const base = (info.publicUrl || location.origin).replace(/\/+$/, '');
+  const urlInput = h('input', { readonly: true, onfocus: (e) => e.target.select() });
+  const qr = h('img', { class: 'qr', alt: 'QR code of the editor link' });
+  const pinState = h('p', { class: 'hint' });
+  const paint = async () => {
+    urlInput.value = base + link.url;
+    pinState.textContent = link.hasPin ? 'Protected with a PIN.' : 'No PIN: anyone with the link can change this board.';
+    const { dataUrl } = await api('POST', '/api/qr-preview', { text: base + link.url });
+    qr.src = dataUrl || '';
+  };
+  await paint();
+  const pinInput = h('input', { type: 'tel', inputmode: 'numeric', maxlength: 8, placeholder: '4–8 digits' });
+  openModal(
+    h('h1', {}, `Editor link: ${b.name}`),
+    h('p', {}, 'Send this link to whoever changes the board (or scan the QR code with an iPhone). It opens a simple page that changes only this board, with no access to anything else.'),
+    h('div', { class: 'editor-link' }, qr, h('div', {},
+      h('label', {}, 'Link', h('div', { class: 'input-row' }, urlInput, copyButton(urlInput))),
+      pinState,
+      h('label', {}, 'PIN', h('div', { class: 'input-row' }, pinInput,
+        h('button', { onclick: guard(async () => { link = await api('POST', `/api/boards/${b.id}/editor-link`, { pin: pinInput.value.trim() }); pinInput.value = ''; await paint(); toast('PIN set'); }) }, 'Set PIN'),
+        h('button', { onclick: guard(async () => { link = await api('POST', `/api/boards/${b.id}/editor-link`, { pin: '' }); await paint(); toast('PIN removed'); }) }, 'No PIN'))))),
+    /localhost|127\.0\.0\.1/.test(base) ? h('p', { class: 'error' }, 'This link uses localhost, which only works on this PC. Set PUBLIC_URL (or open the console by the PC’s network address) for a link that works on phones.') : '',
+    h('div', { class: 'modal-actions' },
+      h('button', { class: 'danger', onclick: guard(async () => {
+        if (!confirm('Make a new link? The current link stops working straight away.')) return;
+        link = await api('POST', `/api/boards/${b.id}/editor-link`, { reset: true });
+        await paint();
+        toast('New link made; the old one no longer works');
+      }) }, 'New link (old one stops working)'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'primary', onclick: closeModal }, 'Done')));
 }
 
 // ---------- channels ----------

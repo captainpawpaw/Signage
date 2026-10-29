@@ -12,6 +12,7 @@ import { Hub } from './realtime.js';
 import { buildManifest, forPlayer, DEFAULT_SETTINGS } from './manifest.js';
 import { activeRule, activeOverride, resolvePlaylistId, scheduleTimeline, localMidnights, defaultPlaylistId, DEFAULT_TIMEZONE, OVERRIDE_RULE_ID } from './schedule.js';
 import { createRelay, parseM3u, cleanStreamUrl, streamFormat, PLAYER_VENDOR } from './live.js';
+import { cleanFields, cleanValues, cleanSteps, boardMediaIds, setPin, pinOk, editorView } from './boards.js';
 import { ADDON_VERSION, addonId, addonConfig, buildAddonZip, buildAddonCrx, buildScreenSetupZip, updatesXml } from './extension.js';
 import { agentVersion, buildAgentPackage, buildLinuxSetup } from './linux.js';
 import { convertDeck, transcodeVideo, detectTools, OFFICE_EXTENSIONS } from './convert.js';
@@ -654,7 +655,7 @@ export async function createApp({
     return null;
   }
 
-  app.get('/api/media', (req, res) => res.json(store.media));
+  app.get('/api/media', (req, res) => res.json(store.media.map((m) => (m.type === 'board' ? editorView(m) : m))));
 
   app.post('/api/media', upload.array('files', 50), (req, res) => {
     const created = [];
@@ -720,6 +721,14 @@ export async function createApp({
       fs.rmSync(path.join(mediaDir, rel), { force: true });
     }
     if (media.type === 'deck') fs.rmSync(path.join(mediaDir, `deck-${media.id}`), { recursive: true, force: true });
+    if (media.type === 'board') {
+      // Photos uploaded for this board go with it.
+      for (const owned of store.media.filter((m) => m.ownerBoardId === media.id)) {
+        files.forget(owned.file);
+        fs.rmSync(path.join(mediaDir, owned.file), { force: true });
+      }
+      store.data.media = store.media.filter((m) => m.ownerBoardId !== media.id);
+    }
     changed();
     res.json({ ok: true });
   });
@@ -804,6 +813,131 @@ export async function createApp({
     changed();
     res.json({ deleted: gone.length });
   });
+
+  // ---- Boards: templates whose text, photos and lists change live ----
+  const boards = () => store.media.filter((m) => m.type === 'board');
+  const imageOk = (board) => (mid) => store.media.some((m) => m.id === mid && m.type === 'image' && (!m.ownerBoardId || m.ownerBoardId === board.id));
+  const editorUrl = (board) => `/b/${board.edit.token}`;
+  const boardDesign = (b, existing = {}) => {
+    const fields = b.fields !== undefined ? cleanFields(b.fields, existing.fields) : existing.fields || [];
+    const bgId = b.background?.mediaId ?? existing.background?.mediaId ?? null;
+    const background = {
+      mediaId: bgId && store.media.some((m) => m.id === bgId && m.type === 'image') ? bgId : null,
+      color: /^#[0-9a-f]{3,8}$/i.test(b.background?.color || '') ? b.background.color : existing.background?.color || '#111827',
+    };
+    const aspect = Array.isArray(b.aspect) && b.aspect.every((n) => Number(n) > 0 && Number(n) <= 100000)
+      ? b.aspect.map(Number) : existing.aspect || [16, 9];
+    return { name: String(b.name ?? existing.name ?? '').trim().slice(0, 80) || 'Board', background, aspect, fields };
+  };
+
+  app.post('/api/boards', (req, res) => {
+    const board = {
+      id: id(), type: 'board', status: 'ready', size: 0, ...boardDesign(req.body || {}),
+      values: {}, steps: [], step: -1, edit: { token: randomToken() }, createdAt: new Date().toISOString(),
+    };
+    board.values = cleanValues(req.body?.values, board.fields, imageOk(board));
+    store.media.push(board);
+    store.save();
+    res.status(201).json(editorView(board, { admin: true }));
+  });
+
+  app.get('/api/boards', (req, res) => res.json(boards().map((b) => editorView(b, { admin: true }))));
+
+  // Design: name, background, shape and fields. Content of removed fields goes.
+  app.put('/api/boards/:id', (req, res) => {
+    const board = findOr404(boards(), req.params.id, 'Board');
+    Object.assign(board, boardDesign(req.body || {}, board));
+    board.values = cleanValues(board.values, board.fields, imageOk(board));
+    board.steps = cleanSteps(board.steps, board.fields, imageOk(board));
+    if (board.step >= board.steps.length) board.step = -1;
+    changed();
+    res.json(editorView(board, { admin: true }));
+  });
+
+  // The private editor link: new link (the old one stops working) and/or PIN.
+  app.post('/api/boards/:id/editor-link', (req, res) => {
+    const board = findOr404(boards(), req.params.id, 'Board');
+    const b = req.body || {};
+    if (b.reset) board.edit.token = randomToken();
+    if (b.pin !== undefined) {
+      if (b.pin && !/^\d{4,8}$/.test(String(b.pin))) throw new HttpError(400, 'The PIN must be 4 to 8 digits');
+      setPin(board, b.pin ? String(b.pin) : null);
+    }
+    store.save();
+    res.json({ url: editorUrl(board), hasPin: Boolean(board.edit.pinHash) });
+  });
+
+  // Content editing, shared by the console (/api/boards/:id/…) and the editor
+  // link (/edit/:token/…). req.board is set by whichever route matched.
+  const content = express.Router({ mergeParams: true });
+  content.get('/', (req, res) => res.json(editorView(req.board)));
+  content.put('/values', (req, res) => {
+    req.board.values = cleanValues(req.body?.values, req.board.fields, imageOk(req.board));
+    changed();
+    res.json(editorView(req.board));
+  });
+  content.put('/steps', (req, res) => {
+    req.board.steps = cleanSteps(req.body?.steps, req.board.fields, imageOk(req.board));
+    if (req.board.step >= req.board.steps.length) req.board.step = req.board.steps.length - 1;
+    changed();
+    res.json(editorView(req.board));
+  });
+  // Which step is on screen: -1 shows the board's own values (e.g. a title page).
+  content.post('/step', (req, res) => {
+    const b = req.board;
+    let step = req.body?.step;
+    if (step === 'next') step = Math.min(b.step + 1, b.steps.length - 1);
+    else if (step === 'previous') step = Math.max(b.step - 1, -1);
+    step = Number(step);
+    if (!Number.isInteger(step) || step < -1 || step >= b.steps.length) throw new HttpError(400, 'No such step');
+    b.step = step;
+    changed();
+    res.json(editorView(b));
+  });
+  // Photos taken or chosen on the phone; they belong to the board.
+  content.post('/upload', upload.single('file'), (req, res) => {
+    const file = req.file;
+    if (!file) throw new HttpError(400, 'Choose a photo');
+    if (!file.mimetype.startsWith('image/')) {
+      fs.rmSync(file.path, { force: true });
+      throw new HttpError(400, 'Only photos and pictures can be used here');
+    }
+    const media = {
+      id: id(), name: Buffer.from(file.originalname, 'latin1').toString('utf8'), type: 'image', mime: file.mimetype,
+      size: file.size, file: file.filename, status: 'ready', ownerBoardId: req.board.id, createdAt: new Date().toISOString(),
+    };
+    store.media.push(media);
+    store.save();
+    res.status(201).json({ mediaId: media.id });
+  });
+  // Pictures the board uses, for the editor's preview.
+  content.get('/media/:mediaId', (req, res) => {
+    const media = store.media.find((m) => m.id === req.params.mediaId && m.type === 'image');
+    if (!media || !(boardMediaIds(req.board).has(media.id) || media.ownerBoardId === req.board.id)) throw new HttpError(404, 'Not found');
+    res.set('Cache-Control', 'private, max-age=3600').sendFile(path.join(mediaDir, media.file));
+  });
+
+  app.use('/api/boards/:id', (req, res, next) => { req.board = findOr404(boards(), req.params.id, 'Board'); next(); }, content);
+
+  // Editor links: /b/<token> is the phone page, /edit/<token>/… its API.
+  // Wrong links and PINs are limited per address so they can't be guessed.
+  const editMisses = new Map();
+  const editLimit = (req) => {
+    const now = Date.now();
+    const m = editMisses.get(req.ip);
+    if (m && m.until > now && m.count >= 20) throw new HttpError(429, 'Too many attempts – try again in 10 minutes');
+    editMisses.set(req.ip, m && m.until > now ? { ...m, count: m.count + 1 } : { count: 1, until: now + 10 * 60_000 });
+  };
+  app.use('/edit/:token', (req, res, next) => {
+    const board = boards().find((b) => b.edit?.token && b.edit.token === req.params.token);
+    if (!board) { editLimit(req); throw new HttpError(404, 'This editor link is not valid (any more). Ask for a new one.'); }
+    // The PIN comes as a header, or in the address for pictures in the editor's preview.
+    if (!pinOk(board, req.get('X-Board-Pin') || String(req.query.pin || ''))) { editLimit(req); throw new HttpError(403, 'PIN required'); }
+    req.board = board;
+    res.set('Cache-Control', 'no-store');
+    next();
+  }, content);
+  app.get('/b/:token', (req, res) => res.set('Cache-Control', 'no-cache').sendFile(path.join(ROOT, 'admin', 'board-edit.html')));
 
   // Playlists
   function cleanItems(items = []) {

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { scheduleTimeline, playlistAt } from './schedule.js';
 import { offlineNotice } from './offline.js';
 import { relayPath, streamFormat } from './live.js';
+import { currentValues } from './boards.js';
 
 export const DEFAULT_SETTINGS = {
   orientation: 'landscape', // landscape | portrait | landscape-flipped | portrait-flipped
@@ -42,6 +43,9 @@ function playlistItems(store, playlist) {
         duration: seconds * 1000, muted: entry.muted !== false,
         ...(media.stream ? { stream: true, codecs: media.codecs } : {}),
       });
+    } else if (media.type === 'board') {
+      // Alone it stays up (and updates in place); next to other items it takes turns.
+      items.push({ id: entry.id, type: 'board', duration: (seconds || (shared ? defaultSeconds : 0)) * 1000, board: boardForPlayer(store, media) });
     } else if (media.type === 'stream') {
       // Played from the source; the relay is the fallback (or the only way, if set).
       items.push({
@@ -52,6 +56,31 @@ function playlistItems(store, playlist) {
     }
   }
   return items;
+}
+
+function imageItem(store, mediaId) {
+  const m = mediaId && store.media.find((x) => x.id === mediaId && x.type === 'image' && x.status === 'ready');
+  return m ? { id: `img:${m.id}`, type: 'image', file: m.file, mime: m.mime } : null;
+}
+
+// A board with what is on now; photos are image items like any other file.
+function boardForPlayer(store, board) {
+  const values = currentValues(board);
+  return {
+    id: board.id,
+    aspect: board.aspect,
+    background: { color: board.background?.color || '#111827', image: imageItem(store, board.background?.mediaId) },
+    fields: board.fields.map((f) => ({
+      ...f,
+      value: f.kind === 'image' ? imageItem(store, values[f.id]) : values[f.id] ?? (f.kind === 'list' ? [] : ''),
+    })),
+  };
+}
+
+// Images inside a board item (background and photo fields).
+export function boardImages(item) {
+  if (item.type !== 'board') return [];
+  return [item.board.background.image, ...item.board.fields.filter((f) => f.kind === 'image').map((f) => f.value)].filter(Boolean);
 }
 
 // Ticker and logo shown on top of a playlist.
@@ -102,6 +131,17 @@ export function buildManifest(store, screen, now = new Date()) {
 export function forPlayer(manifest, mode, { fileEntry, wrap } = {}) {
   const one = (item) => {
     if (item.type === 'live') return item; // not a file: streamed from its source
+    if (item.type === 'board') {
+      const b = item.board;
+      return {
+        ...item,
+        board: {
+          ...b,
+          background: { ...b.background, image: b.background.image && one(b.background.image) },
+          fields: b.fields.map((f) => (f.kind === 'image' && f.value ? { ...f, value: one(f.value) } : f)),
+        },
+      };
+    }
     const { file, ...rest } = item;
     if (mode === 'plain') return { ...rest, url: `/files/${file}` };
     const entry = fileEntry(file);

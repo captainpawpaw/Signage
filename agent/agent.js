@@ -152,7 +152,12 @@ const manifestPath = path.join(STATE_DIR, 'manifest.json');
 function allEnc(m) {
   const out = new Map();
   const logos = Object.values(m.playlists || {}).map((p) => p.overlay?.logo?.image).filter(Boolean);
-  for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items), logos]) {
+  // Pictures inside boards (background and photo fields).
+  const boardImages = [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items)].flat()
+    .filter((it) => it.type === 'board')
+    .flatMap((it) => [it.board.background?.image, ...it.board.fields.map((f) => (f.kind === 'image' ? f.value : null))])
+    .filter(Boolean);
+  for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items), logos, boardImages]) {
     for (const it of list) if (it.enc) out.set(it.enc.f, { ...it.enc, mime: it.mime });
   }
   return [...out.values()];
@@ -161,9 +166,19 @@ function allEnc(m) {
 function toLocal(m) {
   const local = ({ enc, stream, codecs, ...it }) => ({ ...it, url: `/media/${enc.f}`, size: enc.size });
   // Live channels stream from their source; the relay is on the server, not here.
+  const picture = (img) => (img?.enc && isComplete(img.enc) ? local(img) : null);
+  const board = (it) => ({
+    ...it,
+    board: {
+      ...it.board,
+      background: { ...it.board.background, image: picture(it.board.background?.image) },
+      fields: it.board.fields.map((f) => (f.kind === 'image' ? { ...f, value: picture(f.value) } : f)),
+    },
+  });
   const shape = (items) => items
-    .filter((it) => it.type === 'live' || (it.enc && isComplete(it.enc)))
-    .map((it) => (it.type === 'live' ? { ...it, relay: serverUrl && it.relay ? serverUrl + it.relay : it.relay } : local(it)));
+    .filter((it) => it.type === 'live' || it.type === 'board' || (it.enc && isComplete(it.enc)))
+    .map((it) => (it.type === 'live' ? { ...it, relay: serverUrl && it.relay ? serverUrl + it.relay : it.relay }
+      : it.type === 'board' ? board(it) : local(it)));
   const overlay = (o) => {
     const image = o?.logo?.image;
     if (!image) return o;

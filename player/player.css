@@ -66,3 +66,5 @@ html, body {
 #overlay .ticker.large { font-size: 5vmin; }
 #overlay .ticker span { display: inline-block; padding-left: 100%; animation: ticker var(--duration, 20s) linear infinite; will-change: transform; }
 @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+
+.layer > .board-host { position: absolute; inset: 0; }

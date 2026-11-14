@@ -89,6 +89,29 @@ fullscreen.
     again every 15 seconds; in a playlist with other items it is skipped.
   - Live streams aren't end-to-end encrypted the way uploaded media is: they
     come from the provider as they are. Channels can't play offline.
+- **Boards: content you change live, from a phone (the Boards section).** A
+  board is your own design, made in Canva, PowerPoint or Photoshop or just a
+  plain colour, with text, photo and price-list boxes on top whose content
+  changes at any time. Use it for price boards, menus, today's specials,
+  welcome screens or award ceremonies.
+  - **Design** in the console: pick the background picture, add boxes and drag
+    them into place. For each box choose its size, colour, font, alignment and
+    shadow. Long text shrinks to fit its box.
+  - **Change content** from any phone or laptop through the board's private
+    **editor link**: a simple page that edits only that board, with no access
+    to anything else. Optionally protect it with a PIN, share it as a QR code,
+    or replace it to cut off the old one.
+    - Typing is on the screens within a second.
+    - Photos can be taken or chosen on the phone.
+    - Price lists grow and shrink, with up to 3 columns and optional headings.
+  - **Ceremonies:** prepare every step in advance (e.g. each award with its
+    category, winner and photo), then tap **Next** during the event to reveal
+    each one on the screens. **Back to the main board** returns to the title
+    page.
+  - A board goes into playlists, the Schedule and Play now like any media.
+    Alone in a playlist it stays up and updates in place; next to other items
+    it takes turns. Screens draw it themselves, so text stays sharp at any
+    size and in any shape. Photos reach screens encrypted like other media.
 - **Groups.** Put screens into groups such as "Ground floor" or "Canteen". A
   group can have its own default playlist and schedule. You can also send a
   command to every screen in a group at once: Identify, Screenshots or Reload.
@@ -373,6 +396,7 @@ server/
   schedule.js    which playlist a screen shows right now (own + group rules)
   manifest.js    playlist → items; plain URLs (previews) or encrypted refs (devices)
   live.js        TV channels: M3U import, stream formats, the signed relay
+  boards.js      boards: fields, values, steps, editor-link PIN
   extension.js   builds the add-on (Chrome/Edge, Firefox, CRX, screen-PC installer)
   convert.js     PDF/PowerPoint → slides, video → streamable MP4
   store.js       JSON-file datastore

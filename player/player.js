@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const PLAYER_VERSION = '2.5.0';
+  const PLAYER_VERSION = '2.6.0';
   const CACHE_NAME = 'signage-media-v2';
   const CACHE_PREFIX = 'https://cache.signage.invalid';
   const MANIFEST_KEY = 'signage.manifest';
@@ -166,7 +166,12 @@
   }
 
   // ---------- assets ----------
-  const assetKey = (item) => (item.enc ? item.enc.f : item.type === 'live' ? `live:${item.url}` : item.url);
+  const assetKey = (item) => (item.enc ? item.enc.f : item.type === 'live' ? `live:${item.url}` : item.type === 'board' ? `board:${item.id}` : item.url);
+  // What a board looks like, for "has it changed?" (key wrapping differs per connection).
+  const boardKey = (item) => JSON.stringify(item.board, (k, v) => (k === 'enc' ? v.f : v));
+  // Pictures inside a board (background, photo fields): prepared like any image.
+  const boardImages = (item) => (item.type === 'board'
+    ? [item.board.background?.image, ...item.board.fields.map((f) => (f.kind === 'image' ? f.value : null))].filter(Boolean) : []);
   const MediaSourceImpl = self.ManagedMediaSource || self.MediaSource;
   const canStream = (item) => Boolean(item.stream && item.enc && MediaSourceImpl?.isTypeSupported?.(`video/mp4; codecs="${item.codecs}"`));
 
@@ -182,7 +187,9 @@
   async function prepare(item) {
     const key = assetKey(item);
     if (assets.has(key)) return;
-    if (item.type === 'live') {
+    if (item.type === 'board') {
+      assets.set(key, 'board'); // drawn on screen; its pictures are prepared separately
+    } else if (item.type === 'live') {
       assets.set(key, 'live'); // nothing to download ahead: it streams while on screen
     } else if (!item.enc && LOCAL) {
       // Everything is already on this device's disk: play it from there.
@@ -254,7 +261,8 @@
   function allItems(m) {
     const seen = new Map();
     const logos = Object.values(m.playlists || {}).map((p) => p.overlay?.logo?.image).filter(Boolean);
-    for (const list of [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items), logos]) {
+    const lists = [m.items || [], ...Object.values(m.playlists || {}).map((p) => p.items)];
+    for (const list of [...lists, logos, lists.flat().flatMap(boardImages)]) {
       for (const item of list) if (!seen.has(assetKey(item))) seen.set(assetKey(item), item);
     }
     return [...seen.values()];
@@ -327,7 +335,16 @@
     const items = itemsOf(manifest, id);
     applyOverlay(manifest.playlists?.[id]?.overlay || null);
     const same = id === activeId && items.map((i) => i.id).join() === activeItems.map((i) => i.id).join();
-    if (same && (activeItems.length || !force)) { activeItems = items; return; }
+    if (same && (activeItems.length || !force)) {
+      activeItems = items;
+      // A board on screen whose content changed (a price, the next award): redraw it in place.
+      const onScreen = items[index];
+      if (onScreen?.type === 'board' && layers[front].dataset.boardKey !== boardKey(onScreen)) {
+        clearTimeout(advanceTimer);
+        render(onScreen, items.length === 1);
+      }
+      return;
+    }
     activeId = id;
     activeItems = items;
     index = -1;
@@ -420,6 +437,9 @@
   }
 
   function stopLayer(layer) {
+    layer._board?.destroy();
+    layer._board = null;
+    layer.dataset.boardKey = '';
     const video = layer.querySelector('video');
     if (video) { video._stop?.(); video.pause(); video.removeAttribute('src'); video.load(); }
     layer.replaceChildren();
@@ -433,8 +453,9 @@
     $('#idle').hidden = true;
     index = (index + 1) % items.length;
     const item = items[index];
-    // A single still image needs no re-render; it just stays up.
+    // A single still image (or unchanged board) needs no re-render; it just stays up.
     if (items.length === 1 && item.type === 'image' && layers[front].dataset.itemId === item.id) return;
+    if (items.length === 1 && item.type === 'board' && layers[front].dataset.boardKey === boardKey(item)) return;
     render(item, items.length === 1);
   }
 
@@ -466,6 +487,19 @@
     };
 
     stopLayer(layer);
+    if (item.type === 'board') {
+      el = document.createElement('div');
+      el.className = 'board-host';
+      layer.dataset.itemId = item.id;
+      layer.dataset.boardKey = boardKey(item);
+      layer.append(el);
+      layer._board = self.SignageBoard.render(el, item.board, (img) => assets.get(assetKey(img)));
+      // Let the pictures load before showing it.
+      const pics = [...el.querySelectorAll('img')].filter((i) => !i.complete).map((i) => new Promise((r) => { i.onload = r; i.onerror = r; }));
+      Promise.race([Promise.all(pics), sleep(3000)]).then(() => { layer._board?.layout(); reveal(); });
+      if (item.duration) advanceTimer = setTimeout(advance, item.duration);
+      return;
+    }
     if (item.type === 'live') {
       el = document.createElement('video');
       el.muted = item.muted !== false;
@@ -829,10 +863,18 @@
       const el = $('#idle').hidden ? layers[front].firstElementChild : null;
       const sw = el?.naturalWidth || el?.videoWidth;
       const sh = el?.naturalHeight || el?.videoHeight;
+      const boardEl = $('#idle').hidden ? layers[front].querySelector('.signage-board') : null;
       const draw = (text) => {
         ctx.fillStyle = manifest?.settings?.background || '#000';
         ctx.fillRect(0, 0, w, h);
-        if (!text && el && sw && sh) {
+        if (!text && boardEl) {
+          const r = boardEl.getBoundingClientRect();
+          const s = stage.getBoundingClientRect();
+          const k = w / s.width;
+          ctx.fillStyle = boardEl.style.background || '#111827';
+          ctx.fillRect((r.left - s.left) * k, (r.top - s.top) * k, r.width * k, r.height * k);
+          self.SignageBoard.draw(ctx, boardEl, (r.left - s.left) * k, (r.top - s.top) * k, r.width * k, r.height * k);
+        } else if (!text && el && sw && sh) {
           const scale = (manifest?.settings?.fit === 'cover' ? Math.max : Math.min)(w / sw, h / sh);
           ctx.drawImage(el, (w - sw * scale) / 2, (h - sh * scale) / 2, sw * scale, sh * scale);
         } else {

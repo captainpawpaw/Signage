@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { PLAYER_VENDOR } from './live.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PLAYER_FILES = ['player.html', 'player.js', 'player.css'];
+const PLAYER_FILES = ['player.html', 'player.js', 'player.css', 'board.js'];
 const AGENT_DEPENDENCIES = ['ws', 'multicast-dns'];
 
 export const agentVersion = () => JSON.parse(fs.readFileSync(path.join(ROOT, 'agent', 'package.json'), 'utf8')).version;
